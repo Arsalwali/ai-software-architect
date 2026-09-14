@@ -401,10 +401,14 @@ export class GraphStore {
     const where: string[] = []
     const params: unknown[] = []
     if (options.name !== undefined) { where.push('s.name = ?'); params.push(options.name) }
-    if (options.contains !== undefined) { where.push('s.name LIKE ?'); params.push(`%${options.contains}%`) }
+    // ESCAPE '\' lets callers pass a pre-escaped LIKE pattern (see
+    // escapeLikeWildcards in tools/search.ts) so a literal `%` or `_` in a
+    // caller-supplied value is not misread as a SQL wildcard. Callers that
+    // pass plain values (no backslashes) are unaffected.
+    if (options.contains !== undefined) { where.push(`s.name LIKE ? ESCAPE '\\'`); params.push(`%${options.contains}%`) }
     if (options.kind !== undefined) { where.push('s.kind = ?'); params.push(options.kind) }
     if (options.exported !== undefined) { where.push('s.exported = ?'); params.push(options.exported ? 1 : 0) }
-    if (options.pathPrefix !== undefined) { where.push('f.path LIKE ?'); params.push(`${options.pathPrefix}%`) }
+    if (options.pathPrefix !== undefined) { where.push(`f.path LIKE ? ESCAPE '\\'`); params.push(`${options.pathPrefix}%`) }
 
     const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
     const rows = this.db.prepare(
