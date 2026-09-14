@@ -1,0 +1,53 @@
+import { Parser, Language } from 'web-tree-sitter'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { dirname, extname, join } from 'node:path'
+
+const require = createRequire(import.meta.url)
+const here = dirname(fileURLToPath(import.meta.url))
+
+export interface LanguageDef {
+  id: string
+  extensions: string[]
+  wasmPath: string
+  queryDir: string
+}
+
+function def(id: string, wasmName: string, queryDirName: string, extensions: string[]): LanguageDef {
+  return {
+    id,
+    extensions,
+    wasmPath: require.resolve(`@vscode/tree-sitter-wasm/wasm/tree-sitter-${wasmName}.wasm`),
+    queryDir: join(here, 'queries', queryDirName),
+  }
+}
+
+// Adding a language means adding one entry here plus a queries/<dir> with
+// symbols.scm, imports.scm and calls.scm. Nothing else in the codebase changes.
+export const LANGUAGES: LanguageDef[] = [
+  def('typescript', 'typescript', 'typescript', ['.ts', '.mts', '.cts']),
+  def('tsx', 'tsx', 'typescript', ['.tsx']),
+  def('javascript', 'javascript', 'typescript', ['.js', '.mjs', '.cjs', '.jsx']),
+]
+
+const byExtension = new Map<string, LanguageDef>()
+for (const language of LANGUAGES) {
+  for (const ext of language.extensions) byExtension.set(ext, language)
+}
+
+export function languageForPath(path: string): LanguageDef | null {
+  return byExtension.get(extname(path)) ?? null
+}
+
+let initialized: Promise<void> | null = null
+const loaded = new Map<string, Promise<Language>>()
+
+export function loadLanguage(def: LanguageDef): Promise<Language> {
+  initialized ??= Parser.init()
+  let existing = loaded.get(def.wasmPath)
+  if (!existing) {
+    existing = initialized.then(() => Language.load(def.wasmPath))
+    loaded.set(def.wasmPath, existing)
+  }
+  return existing
+}
