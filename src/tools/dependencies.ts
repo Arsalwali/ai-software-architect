@@ -44,7 +44,12 @@ export function resolveTarget(store: GraphStore, target: string): ResolvedTarget
     return { kind: 'module', resolved: target.replace(/\/$/, '') }
   }
 
-  const symbols = store.findSymbols({ name: target, limit: 20 })
+  // Sized by the TRUE match count, not a magic number: a hardcoded limit
+  // here would silently drop candidates past it before traversal even
+  // begins, which is exactly the class of defect this project has already
+  // shipped and fixed once (see search.ts's countSymbols pattern).
+  const nameFilter = { name: target }
+  const symbols = store.findSymbols({ ...nameFilter, limit: store.countSymbols(nameFilter) })
   if (symbols.length > 0) {
     return {
       kind: 'symbol',
@@ -112,7 +117,11 @@ function fileLevel(store: GraphStore, target: ResolvedTarget, options: Dependenc
 }
 
 function symbolLevel(store: GraphStore, target: ResolvedTarget, options: DependencyOptions): DependencyNode[] {
-  const startIds = store.findSymbols({ name: target.resolved, limit: 20 }).map(s => s.id)
+  // Same reasoning as resolveTarget above: size by the true count so a
+  // symbol name with many definitions never has its starting set silently
+  // narrowed before the BFS even runs.
+  const nameFilter = { name: target.resolved }
+  const startIds = store.findSymbols({ ...nameFilter, limit: store.countSymbols(nameFilter) }).map(s => s.id)
   return traverseSymbols(store, startIds, options.direction, options.depth, options.kind, options.minConfidence)
 }
 

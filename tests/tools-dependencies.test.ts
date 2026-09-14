@@ -1,11 +1,27 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { join } from 'node:path'
-import { mkdtempSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { runColdIndex } from '../src/indexer/pipeline.js'
 import { getDependencies, resolveTarget } from '../src/tools/dependencies.js'
 import { GraphStore } from '../src/store/graph-store.js'
 import { buildFixture } from './fixture-builder.js'
+
+/**
+ * Ad hoc repository in a fresh temp dir, independent of the shared
+ * `buildFixture` (tasks 1-7 assert on its exact contents). No git init
+ * needed: plain non-git directories already go through the walkCandidates
+ * discovery path elsewhere in this suite.
+ */
+function writeLocalFixture(files: Record<string, string>): string {
+  const root = mkdtempSync(join(tmpdir(), 'arch-dep-local-'))
+  for (const [relative, content] of Object.entries(files)) {
+    const absolute = join(root, relative)
+    mkdirSync(dirname(absolute), { recursive: true })
+    writeFileSync(absolute, content)
+  }
+  return root
+}
 
 let store: GraphStore
 
@@ -87,5 +103,90 @@ describe('getDependencies at symbol level', () => {
     const r = getDependencies(store, { target: 'src/index.ts', direction: 'out', depth: 5, limit: 1 })
     expect(r.nodes).toHaveLength(1)
     expect(r.truncated!.total).toBeGreaterThan(1)
+  })
+})
+
+describe('resolveTarget and symbolLevel do not silently narrow the starting set', () => {
+  // 25 files each export a distinct function literally named `dupSym` --
+  // comfortably more than the old hardcoded `limit: 20` on the two
+  // `findSymbols` calls in resolveTarget and symbolLevel would once have
+  // let through. Only f24 (the last one alphabetically, so the first one
+  // an off-by-one-safe cap would drop) has an actual caller.
+  const DUP_COUNT = 25
+  let dupStore: GraphStore
+
+  beforeAll(async () => {
+    const files: Record<string, string> = {
+      'src/caller.ts':
+        'import { dupSym } from "./dupsym/f24";\n' +
+        'export function useIt(): void {\n  dupSym();\n}\n',
+    }
+    for (let i = 0; i < DUP_COUNT; i++) {
+      const n = String(i).padStart(2, '0')
+      files[`src/dupsym/f${n}.ts`] = 'export function dupSym(): void {}\n'
+    }
+    const fixture = writeLocalFixture(files)
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-dep-dup-')), 'index.db')
+    await runColdIndex({ repoRoot: fixture, dbPath })
+    dupStore = GraphStore.open(dbPath)
+  })
+
+  it('resolveTarget reports every candidate, not just the first 20', () => {
+    const t = resolveTarget(dupStore, 'dupSym')
+    expect(t.kind).toBe('symbol')
+    expect(t.candidates).toHaveLength(DUP_COUNT)
+  })
+
+  it('symbolLevel BFS starts from every definition, so a caller of the 25th is not dropped', () => {
+    const r = getDependencies(dupStore, { target: 'dupSym', direction: 'in', depth: 1, limit: 100 })
+    expect(r.nodes.map(n => n.path)).toContain('src/caller.ts')
+  })
+})
+
+describe('getDependencies minConfidence ordering, with a genuine ambiguous edge', () => {
+  // Spec §10's required "deliberately ambiguous name collision" fixture,
+  // dedicated to this test rather than the shared one. `shared` is
+  // exported by both a.ts and b.ts; consumer.ts resolves imports to BOTH
+  // (via unrelated names) and calls the bare identifier `shared()`, which
+  // fans out to both candidates as `ambiguous`. onlyA.ts resolves an
+  // import to ONLY a.ts, so its call to `shared()` resolves uniquely
+  // (`heuristic`). That gives both tiers real edges into the same name to
+  // filter between -- unlike the `exact` case above, which is zero
+  // regardless of whether the rank ordering is even correct.
+  let ambStore: GraphStore
+
+  beforeAll(async () => {
+    const fixture = writeLocalFixture({
+      'src/a.ts':
+        'export function shared(): number {\n  return 1;\n}\n' +
+        'export function helperA(): number {\n  return 0;\n}\n',
+      'src/b.ts':
+        'export function shared(): number {\n  return 2;\n}\n' +
+        'export function helperB(): number {\n  return 0;\n}\n',
+      'src/consumer.ts':
+        'import { helperA } from "./a";\n' +
+        'import { helperB } from "./b";\n' +
+        'export function run(): number {\n  return shared();\n}\n',
+      'src/onlyA.ts':
+        'import { shared } from "./a";\n' +
+        'export function callOnlyA(): number {\n  return shared();\n}\n',
+    })
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-dep-amb-')), 'index.db')
+    await runColdIndex({ repoRoot: fixture, dbPath })
+    ambStore = GraphStore.open(dbPath)
+  })
+
+  it('a minConfidence of heuristic includes the heuristic edge and excludes the ambiguous ones', () => {
+    const unfiltered = getDependencies(ambStore, { target: 'shared', direction: 'in', depth: 1, limit: 50 })
+    expect(unfiltered.nodes.some(n => n.confidence === 'ambiguous')).toBe(true)
+    expect(unfiltered.nodes.some(n => n.confidence === 'heuristic')).toBe(true)
+
+    const strict = getDependencies(
+      ambStore, { target: 'shared', direction: 'in', depth: 1, minConfidence: 'heuristic', limit: 50 },
+    )
+    expect(strict.nodes.length).toBeGreaterThan(0)
+    expect(strict.nodes.every(n => n.confidence === 'heuristic')).toBe(true)
+    expect(strict.nodes.some(n => n.confidence === 'ambiguous')).toBe(false)
+    expect(strict.nodes.length).toBeLessThan(unfiltered.nodes.length)
   })
 })
