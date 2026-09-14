@@ -1,9 +1,9 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { git, isGitRepo } from '../repo/repo-source.js'
 import { languageForPath } from '../parser/languages.js'
 
-export type SkipReason = 'vendored' | 'too-large' | 'minified' | 'binary'
+export type SkipReason = 'vendored' | 'too-large' | 'minified' | 'binary' | 'unreadable' | 'not-a-file'
 
 export interface SkippedFile {
   path: string
@@ -18,6 +18,7 @@ export interface DiscoveryResult {
 const VENDORED = new Set(['node_modules', 'vendor', 'dist', 'build', '.venv', 'venv', '.git', 'target'])
 const MAX_BYTES = 1_000_000
 const MAX_AVERAGE_LINE_LENGTH = 500
+const BINARY_SNIFF_BYTES = 8000
 
 export function discoverFiles(repoRoot: string): DiscoveryResult {
   const candidates = isGitRepo(repoRoot) ? gitCandidates(repoRoot) : walkCandidates(repoRoot)
@@ -32,18 +33,35 @@ export function discoverFiles(repoRoot: string): DiscoveryResult {
     }
 
     const absolute = join(repoRoot, path)
-    let size: number
+    let stats: ReturnType<typeof statSync>
     try {
-      size = statSync(absolute).size
+      // statSync follows symlinks, so a symlink to a real file lands here as
+      // a regular file, a symlink to a directory is caught by the isFile()
+      // check below, and a broken symlink (or any other path that no longer
+      // exists, e.g. a tracked-but-rm'd file, or a synthetic directory
+      // marker) throws and is recorded rather than silently dropped.
+      stats = statSync(absolute)
     } catch {
+      skipped.push({ path, reason: 'unreadable' })
       continue
     }
-    if (size > MAX_BYTES) {
+    if (!stats.isFile()) {
+      skipped.push({ path, reason: 'not-a-file' })
+      continue
+    }
+    if (stats.size > MAX_BYTES) {
       skipped.push({ path, reason: 'too-large' })
       continue
     }
-    if (languageForPath(path) && isMinified(absolute, path)) {
-      skipped.push({ path, reason: 'minified' })
+
+    const language = languageForPath(path)
+    if (language) {
+      if (isMinified(absolute, path)) {
+        skipped.push({ path, reason: 'minified' })
+        continue
+      }
+    } else if (isBinary(absolute)) {
+      skipped.push({ path, reason: 'binary' })
       continue
     }
     files.push(path)
@@ -81,7 +99,11 @@ function walkCandidates(repoRoot: string): string[] {
           continue
         }
         visit(absolute)
-      } else if (entry.isFile() && entry.name !== '.gitignore') {
+      } else if ((entry.isFile() || entry.isSymbolicLink()) && entry.name !== '.gitignore') {
+        // Symlinks are included as candidates so they can't vanish without a
+        // diagnostic. statSync above resolves what they point at: a real
+        // file is indexed normally, a directory hits not-a-file, and a
+        // broken link hits unreadable.
         out.push(rel)
       }
     }
@@ -99,6 +121,32 @@ function readGitignoreDirectories(repoRoot: string): Set<string> {
     )
   } catch {
     return new Set()
+  }
+}
+
+/**
+ * Sniffs for a NUL byte in the first BINARY_SNIFF_BYTES bytes. Only called
+ * for paths with no known language (languageForPath returned null), where an
+ * extension denylist can't work because the extension is unknown by
+ * definition. Reads as a Buffer, not a utf8 string — decoding as utf8 would
+ * substitute replacement characters and destroy the exact signal (0x00)
+ * being tested for.
+ */
+function isBinary(absolute: string): boolean {
+  let fd: number
+  try {
+    fd = openSync(absolute, 'r')
+  } catch {
+    return false
+  }
+  try {
+    const buffer = Buffer.alloc(BINARY_SNIFF_BYTES)
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
+    return buffer.subarray(0, bytesRead).includes(0)
+  } catch {
+    return false
+  } finally {
+    closeSync(fd)
   }
 }
 

@@ -1419,6 +1419,24 @@ export function git(repoRoot: string, args: string[]): string | null {
 
 - [ ] **Step 5: Implement discovery**
 
+> **Correction applied during execution.** The reference implementation below was
+> found, in Task 5's review, to violate this plan's own never-silently-omit
+> constraint in three places. All three were fixed before Task 5 was accepted; the
+> text below is annotated but a reader should treat the shipped `src/indexer/discover.ts`
+> as authoritative.
+>
+> 1. `statSync`'s `catch { continue }` dropped a candidate with no record in either
+>    `files` or `skipped`. Reachable when a tracked file is deleted with `rm` rather
+>    than `git rm`, and when the walk emits a `<directory>` marker for a gitignored
+>    directory that is not a hardcoded vendored name. Fixed by recording `unreadable`,
+>    and `not-a-file` when the path exists but is not a regular file.
+> 2. `walkCandidates` admitted only `isDirectory()` or `isFile()` entries, so symlinks
+>    never became candidates and could never be recorded as skipped. Fixed by admitting
+>    symlinks and letting the post-stat classification handle them.
+> 3. `binary` was a declared but unreachable `SkipReason`: a sub-1MB binary with an
+>    unrecognized extension was indexed as source. Fixed with a NUL-byte sniff of the
+>    first 8000 bytes for files with no known language.
+
 `src/indexer/discover.ts`:
 ```ts
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -1426,7 +1444,8 @@ import { join, relative, sep } from 'node:path'
 import { git, isGitRepo } from '../repo/repo-source.js'
 import { languageForPath } from '../parser/languages.js'
 
-export type SkipReason = 'vendored' | 'too-large' | 'minified' | 'binary'
+export type SkipReason =
+  | 'vendored' | 'too-large' | 'minified' | 'binary' | 'unreadable' | 'not-a-file'
 
 export interface SkippedFile {
   path: string

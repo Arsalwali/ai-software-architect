@@ -33,6 +33,10 @@ service.place(2);
   'README.md': '# fixture\n',
   'node_modules/pkg/index.js': 'module.exports = {};\n',
   'bundle.min.js': '!function(){var a=1;}();\n',
+  // Unknown extension + a NUL byte: exercises the binary sniff. Must stay
+  // skipped (reason 'binary'), never indexed — EXPECTED_FILES in
+  // discover.test.ts does not include it.
+  'assets/logo.png': '\x89PNG\r\n\x1a\n\u0000\u0000\u0000\rIHDR\u0000\u0000\u0000\u0000',
 }
 
 /**
