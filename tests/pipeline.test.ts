@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { join } from 'node:path'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { runColdIndex } from '../src/indexer/pipeline.js'
 import { GraphStore } from '../src/store/graph-store.js'
 import type { IndexReport } from '../src/indexer/pipeline.js'
 import { buildFixture } from './fixture-builder.js'
+import { gitHeadCommit } from '../src/repo/repo-source.js'
 
 let fixture: string
 let dbPath: string
@@ -61,9 +62,108 @@ describe('cold index', () => {
     expect(all.some(e => e.dstName === 'log' && e.dstSymbolId === null)).toBe(true)
   })
 
-  it('writes head_commit only after a successful run', () => {
+  it('writes head_commit only after a successful run, and clears it when a later run fails partway', async () => {
+    // Half one: a successful run wrote the real head commit, not just any value.
     expect(store.getMeta('indexed_at')).toBeDefined()
     expect(store.getMeta('files_indexed')).toBe('5')
+    const expectedHead = gitHeadCommit(fixture)
+    expect(expectedHead).toBeTruthy()
+    expect(store.getMeta('head_commit')).toBe(expectedHead)
+
+    // Half two: a run that fails partway must leave head_commit cleared, not
+    // stale from a prior success. Use a separate fixture/db so this doesn't
+    // disturb state the other tests in this file depend on.
+    const failFixture = buildFixture({ git: true })
+    const failDb = join(mkdtempSync(join(tmpdir(), 'arch-')), 'index.db')
+
+    await runColdIndex({ repoRoot: failFixture, dbPath: failDb })
+    const succeeded = GraphStore.open(failDb)
+    expect(succeeded.getMeta('head_commit')).toBeTruthy()
+    succeeded.close()
+
+    // A nonexistent repoRoot makes isGitRepo() false and the filesystem walk
+    // throw ENOENT from readdirSync during discovery -- deterministically
+    // after the pipeline's initial clear, and well before the final
+    // head_commit write.
+    await expect(
+      runColdIndex({ repoRoot: join(failFixture, 'missing-repo'), dbPath: failDb }),
+    ).rejects.toThrow()
+
+    const afterFailure = GraphStore.open(failDb)
+    expect(afterFailure.getMeta('head_commit')).toBe('')
+    afterFailure.close()
+  })
+
+  it('leaves head_commit cleared when the run fails during edge persistence (phase 5)', async () => {
+    // A failure-injection deliberately placed AFTER call resolution and
+    // BEFORE store.insertEdges. This pins down exactly the ordering the
+    // brief requires: head_commit must not be written until phase 5 (and
+    // phase 6) have completed. An early-discovery failure (as used above)
+    // can't distinguish "write after phase 5" from "write moved earlier but
+    // still before phase 5" -- both positions sit after that early throw.
+    // This test throws exactly at the phase-5 boundary, so it does.
+    const failFixture = buildFixture({ git: true })
+    const failDb = join(mkdtempSync(join(tmpdir(), 'arch-')), 'index.db')
+
+    const spy = vi.spyOn(GraphStore.prototype, 'insertEdges').mockImplementation(() => {
+      throw new Error('simulated phase-5 failure')
+    })
+    try {
+      await expect(
+        runColdIndex({ repoRoot: failFixture, dbPath: failDb }),
+      ).rejects.toThrow('simulated phase-5 failure')
+    } finally {
+      spy.mockRestore()
+    }
+
+    const afterStore = GraphStore.open(failDb)
+    expect(afterStore.getMeta('head_commit')).toBe('')
+    afterStore.close()
+  })
+
+  it('drops a file and its edges once it disappears from the repo on a re-run', async () => {
+    // This exercises store.clear(): insertParsedFiles only deletes rows for
+    // paths present in the CURRENT run, so a file removed between runs is
+    // never revisited by that per-path delete. Only clear() purges it.
+    const twoRunFixture = buildFixture({ git: true })
+    const twoRunDb = join(mkdtempSync(join(tmpdir(), 'arch-')), 'index.db')
+
+    await runColdIndex({ repoRoot: twoRunFixture, dbPath: twoRunDb })
+    const firstStore = GraphStore.open(twoRunDb)
+    const notifyId = firstStore.fileIdByPath('src/services/notify.ts')
+    expect(notifyId).toBeDefined()
+    firstStore.close()
+
+    rmSync(join(twoRunFixture, 'src/services/notify.ts'))
+
+    await runColdIndex({ repoRoot: twoRunFixture, dbPath: twoRunDb })
+    const secondStore = GraphStore.open(twoRunDb)
+
+    expect(secondStore.fileIdByPath('src/services/notify.ts')).toBeUndefined()
+
+    // SQLite reuses rowids once a table is emptied, so the old notifyId
+    // number may coincidentally equal some OTHER file's new id after
+    // clear() -- comparing against it directly would be a false signal.
+    // Instead check every edge's endpoints resolve to a file that still
+    // exists post-rebuild; a dangling reference to the deleted file would
+    // fail this regardless of which raw id it happens to carry.
+    const liveFileIds = new Set(
+      secondStore.allFilePaths().map(p => secondStore.fileIdByPath(p)!),
+    )
+    const allEdges = secondStore.allEdges()
+    for (const edge of allEdges) {
+      expect(liveFileIds.has(edge.srcFileId)).toBe(true)
+      if (edge.dstFileId !== null) expect(liveFileIds.has(edge.dstFileId)).toBe(true)
+    }
+
+    // The rebuild is coherent, not just missing rows: order.ts's call to the
+    // now-gone `notify` becomes unresolved rather than referencing a dangling id.
+    const orderId = secondStore.fileIdByPath('src/services/order.ts')!
+    const notifyCall = allEdges.find(e => e.srcFileId === orderId && e.dstName === 'notify')!
+    expect(notifyCall).toBeDefined()
+    expect(notifyCall.dstSymbolId).toBeNull()
+
+    secondStore.close()
   })
 
   it('produces an identical graph when run twice', async () => {
