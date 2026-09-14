@@ -47,6 +47,20 @@ export interface ImportInput {
   line: number
 }
 
+const EDGE_SELECT =
+  'SELECT src_file_id, src_symbol_id, dst_file_id, dst_symbol_id, dst_name, kind, confidence, line FROM edges'
+
+export interface EdgeRow {
+  srcFileId: number
+  srcSymbolId: number | null
+  dstFileId: number | null
+  dstSymbolId: number | null
+  dstName: string
+  kind: EdgeKind
+  confidence: Confidence
+  line: number
+}
+
 /** The only module in the project that touches SQLite. */
 export class GraphStore {
   private constructor(private readonly db: Database.Database) {}
@@ -194,6 +208,42 @@ export class GraphStore {
 
   close(): void {
     this.db.close()
+  }
+
+  importsForFile(fileId: number): Array<{ rawSpecifier: string; resolvedFileId: number | null; confidence: string }> {
+    const rows = this.db.prepare(
+      'SELECT raw_specifier, resolved_file_id, confidence FROM imports WHERE file_id = ?',
+    ).all(fileId) as Record<string, unknown>[]
+    return rows.map(r => ({
+      rawSpecifier: r.raw_specifier as string,
+      resolvedFileId: (r.resolved_file_id as number | null) ?? null,
+      confidence: r.confidence as string,
+    }))
+  }
+
+  edgesInto(fileId: number): EdgeRow[] {
+    return this.toEdgeRows(this.db.prepare(EDGE_SELECT + ' WHERE dst_file_id = ?').all(fileId))
+  }
+
+  allEdges(): EdgeRow[] {
+    return this.toEdgeRows(this.db.prepare(EDGE_SELECT).all())
+  }
+
+  clear(): void {
+    this.db.exec('DELETE FROM edges; DELETE FROM imports; DELETE FROM symbols; DELETE FROM files;')
+  }
+
+  private toEdgeRows(rows: unknown[]): EdgeRow[] {
+    return (rows as Record<string, unknown>[]).map(r => ({
+      srcFileId: r.src_file_id as number,
+      srcSymbolId: (r.src_symbol_id as number | null) ?? null,
+      dstFileId: (r.dst_file_id as number | null) ?? null,
+      dstSymbolId: (r.dst_symbol_id as number | null) ?? null,
+      dstName: r.dst_name as string,
+      kind: r.kind as EdgeKind,
+      confidence: r.confidence as Confidence,
+      line: r.line as number,
+    }))
   }
 
   private allSymbolRows(): SymbolRow[] {
