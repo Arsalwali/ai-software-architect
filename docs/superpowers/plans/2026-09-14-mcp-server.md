@@ -1792,8 +1792,8 @@ describe('buildOverview', () => {
 
   it('states plainly what fraction of call edges resolved to a target', () => {
     const o = buildOverview(store)
-    expect(o.resolvedFraction).toBeGreaterThanOrEqual(0)
-    expect(o.resolvedFraction).toBeLessThanOrEqual(1)
+    expect(o.internalTargetFraction).toBeGreaterThanOrEqual(0)
+    expect(o.internalTargetFraction).toBeLessThanOrEqual(1)
   })
 
   it('lists top-level modules with their file and symbol counts', () => {
@@ -1840,8 +1840,14 @@ export interface RepoOverview {
   languages: Array<{ lang: string | null; files: number; symbols: number }>
   /** Every confidence tier, reported separately. Never merged. */
   edgeConfidence: Record<string, number>
-  /** Share of edges that found a concrete target. The rest are external. */
-  resolvedFraction: number
+  /**
+   * Share of edges whose target is a symbol inside this repository. The
+   * remainder point at external, builtin or third-party code — expected,
+   * not a resolution failure. Named for what it measures rather than
+   * "resolved", which reads as a success rate and invites a reader to
+   * treat a low value as breakage.
+   */
+  internalTargetFraction: number
   modules: Array<{ path: string; files: number; symbols: number }>
   entryPoints: string[]
   skipped: { total: number; byReason: Record<string, number> }
@@ -1861,7 +1867,7 @@ export function buildOverview(store: GraphStore): RepoOverview {
   // Unresolved edges are external by definition, not failures.
   const targeted = edgeConfidence.exact + edgeConfidence.resolved +
     edgeConfidence.heuristic + edgeConfidence.ambiguous
-  const resolvedFraction = totals.edges === 0 ? 0 : targeted / totals.edges
+  const internalTargetFraction = totals.edges === 0 ? 0 : targeted / totals.edges
 
   const paths = store.allFilePaths()
   const symbolsByFile = store.symbolsByFile()
@@ -1899,7 +1905,7 @@ export function buildOverview(store: GraphStore): RepoOverview {
     totals,
     languages: store.languageBreakdown(),
     edgeConfidence,
-    resolvedFraction: Number(resolvedFraction.toFixed(4)),
+    internalTargetFraction: Number(internalTargetFraction.toFixed(4)),
     modules: [...moduleFiles.entries()]
       .map(([path, counts]) => ({ path, ...counts }))
       .sort((a, b) => b.files - a.files),

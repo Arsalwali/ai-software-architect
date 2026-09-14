@@ -8,8 +8,8 @@ export interface RepoOverview {
   languages: Array<{ lang: string | null; files: number; symbols: number }>
   /** Every confidence tier, reported separately. Never merged. */
   edgeConfidence: Record<string, number>
-  /** Share of edges that found a concrete target. The rest are external. */
-  resolvedFraction: number
+  /** Share of edges whose target is a symbol inside this repository. The remainder point at external, builtin, or third-party code, which is expected rather than a resolution failure. */
+  internalTargetFraction: number
   modules: Array<{ path: string; files: number; symbols: number }>
   entryPoints: string[]
   skipped: { total: number; byReason: Record<string, number> }
@@ -67,7 +67,7 @@ export function buildOverview(store: GraphStore): RepoOverview {
     totals,
     languages: store.languageBreakdown(),
     edgeConfidence,
-    resolvedFraction: Number(resolvedFraction.toFixed(4)),
+    internalTargetFraction: Number(resolvedFraction.toFixed(4)),
     modules: [...moduleFiles.entries()]
       .map(([path, counts]) => ({ path, ...counts }))
       .sort((a, b) => b.files - a.files),

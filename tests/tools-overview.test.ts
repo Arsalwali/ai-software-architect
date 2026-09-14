@@ -37,10 +37,10 @@ describe('buildOverview', () => {
     expect(o.edgeConfidence).toHaveProperty('heuristic')
   })
 
-  it('states plainly what fraction of call edges resolved to a target', () => {
+  it('reports the share of edges targeting internal symbols', () => {
     const o = buildOverview(store)
-    expect(o.resolvedFraction).toBeGreaterThanOrEqual(0)
-    expect(o.resolvedFraction).toBeLessThanOrEqual(1)
+    expect(o.internalTargetFraction).toBeGreaterThanOrEqual(0)
+    expect(o.internalTargetFraction).toBeLessThanOrEqual(1)
   })
 
   it('lists top-level modules with their file and symbol counts', () => {
