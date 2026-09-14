@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LANGUAGES, languageForPath, loadLanguage, type LanguageDef } from './languages.js'
-import type { ParsedFile, SourceSymbol, SymbolKind } from '../types.js'
+import type { ParsedFile, SourceSymbol, SymbolKind, RawImport, CallSite, ParseError } from '../types.js'
 
 interface Compiled {
   language: Language
   symbols: Query
+  imports: Query
+  calls: Query
 }
 
 export class RepoParser {
@@ -23,6 +25,8 @@ export class RepoParser {
       compiled.set(def.id, {
         language,
         symbols: new Query(language, readQuery(def, 'symbols')),
+        imports: new Query(language, readQuery(def, 'imports')),
+        calls: new Query(language, readQuery(def, 'calls')),
       })
     }
     return new RepoParser(new Parser(), compiled)
@@ -51,9 +55,9 @@ export class RepoParser {
         lang: def.id,
         contentHash,
         symbols: extractSymbols(compiled.symbols, tree.rootNode),
-        imports: [],
-        callSites: [],
-        errors: [],
+        imports: extractImports(compiled.imports, tree.rootNode),
+        callSites: extractCalls(compiled.calls, tree.rootNode),
+        errors: extractErrors(tree.rootNode),
       }
     } finally {
       tree.delete()
@@ -118,4 +122,71 @@ function enclosingClassName(node: Node): string | null {
     current = current.parent
   }
   return null
+}
+
+/** Names that are import mechanisms, not real call targets. */
+const IMPORT_MECHANISMS = new Set(['require', 'import'])
+
+const ENCLOSING_SYMBOL_NODES = new Set([
+  'function_declaration', 'method_definition', 'arrow_function', 'function_expression',
+])
+
+function extractImports(query: Query, root: Node): RawImport[] {
+  const imports: RawImport[] = []
+  for (const match of query.matches(root)) {
+    const specifier = match.captures.find(c => c.name === 'specifier')
+    const tagged = match.captures.find(c => c.name.startsWith('import.'))
+    if (!specifier || !tagged) continue
+    imports.push({
+      specifier: specifier.node.text,
+      kind: tagged.name.slice('import.'.length) as RawImport['kind'],
+      line: tagged.node.startPosition.row + 1,
+    })
+  }
+  return imports
+}
+
+function extractCalls(query: Query, root: Node): CallSite[] {
+  const calls: CallSite[] = []
+  for (const match of query.matches(root)) {
+    const callee = match.captures.find(c => c.name === 'callee')
+    const site = match.captures.find(c => c.name === 'call' || c.name === 'new')
+    if (!callee || !site) continue
+    if (IMPORT_MECHANISMS.has(callee.node.text)) continue
+    calls.push({
+      name: callee.node.text,
+      line: callee.node.startPosition.row + 1,
+      enclosingSymbol: enclosingSymbolName(callee.node),
+      kind: site.name === 'new' ? 'instantiates' : 'calls',
+    })
+  }
+  return calls
+}
+
+/**
+ * Walk up to the nearest enclosing function-like node and read its name. An
+ * arrow function assigned to a variable takes the variable's name, which is
+ * how `export const handler = () => {}` gets attributed to `handler`.
+ */
+function enclosingSymbolName(node: Node): string | null {
+  let current = node.parent
+  while (current) {
+    if (ENCLOSING_SYMBOL_NODES.has(current.type)) {
+      const named = current.childForFieldName('name')
+      if (named) return named.text
+      if (current.parent?.type === 'variable_declarator') {
+        return current.parent.childForFieldName('name')?.text ?? null
+      }
+    }
+    current = current.parent
+  }
+  return null
+}
+
+function extractErrors(root: Node): ParseError[] {
+  if (!root.hasError) return []
+  return root.descendantsOfType('ERROR').map(node => ({
+    line: node.startPosition.row + 1,
+    message: `syntax error near ${JSON.stringify(node.text.slice(0, 40))}`,
+  }))
 }
