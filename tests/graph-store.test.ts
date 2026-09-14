@@ -84,9 +84,29 @@ describe('GraphStore', () => {
 
   it('is idempotent on re-insert of the same path', () => {
     const store = GraphStore.open(':memory:')
-    store.insertParsedFiles([parsedFile('src/a.ts')])
-    store.insertParsedFiles([parsedFile('src/a.ts')])
+    store.insertParsedFiles([
+      parsedFile('src/a.ts', {
+        symbols: [
+          { name: 'keep', kind: 'function', startLine: 1, endLine: 1, exported: true, signature: null, parentName: null },
+          { name: 'gone', kind: 'function', startLine: 2, endLine: 2, exported: false, signature: null, parentName: null },
+        ],
+      }),
+    ])
+    store.insertParsedFiles([
+      parsedFile('src/a.ts', {
+        symbols: [
+          { name: 'keep', kind: 'function', startLine: 1, endLine: 1, exported: true, signature: null, parentName: null },
+          { name: 'fresh', kind: 'function', startLine: 3, endLine: 3, exported: false, signature: null, parentName: null },
+        ],
+      }),
+    ])
     expect(store.allFilePaths()).toEqual(['src/a.ts'])
+
+    const fileId = store.fileIdByPath('src/a.ts')!
+    expect(store.symbolsByFile().get(fileId)!.map(s => s.name).sort()).toEqual(['fresh', 'keep'])
+    expect(store.symbolsByName().get('gone')).toBeUndefined()
+    expect(store.symbolsByName().get('keep')).toHaveLength(1)
+    expect(store.symbolsByName().get('fresh')).toHaveLength(1)
     store.close()
   })
 })
