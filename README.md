@@ -62,18 +62,38 @@ the default.
 
 ### What the confidence tiers mean
 
-Results carry the evidence behind them, and the distinction matters:
+Every edge carries the evidence behind it, and the distinction matters. The
+five literal tier values — the strings you'll actually see in
+`get_repo_overview`'s `edgeConfidence` and in `get_dependencies`'
+`minConfidence` enum — are:
 
-- **verified** — a type resolver confirmed the binding. Nothing emits this yet.
-- **likely** — the name matched exactly one candidate reachable from the file's imports.
-- **ambiguous** — the name matched several candidates. All are reported, because
-  under-reporting what might break is worse than over-reporting it.
+- **exact** — a type resolver confirmed the binding. Nothing emits this yet.
+- **resolved** — the tier an import edge carries when its specifier resolves
+  to a file inside this repository.
+- **heuristic** — the name matched exactly one candidate reachable from the
+  file's imports.
+- **ambiguous** — the name matched several candidates. All are reported,
+  because under-reporting what might break is worse than over-reporting it.
 - **unresolved** — no candidate in this repository. External, builtin, or
   third-party. Not uncertainty, just an absent target.
 
 `unresolved` and `ambiguous` are never conflated: an absent target and a
 genuinely uncertain one are different findings, and merging them would hide
 which case you're in.
+
+`impact_of` reports a coarser, three-way grouping in its `buckets` field
+instead of the five raw tiers, because it's answering "how sure are we,"
+not "which mechanism produced this edge":
+
+| `impact_of` bucket | built from tier(s)   |
+| ------------------- | -------------------- |
+| `verified`           | `exact`               |
+| `likely`             | `resolved`, `heuristic` |
+| `ambiguous`          | `ambiguous`           |
+
+`unresolved` edges cannot appear in `impact_of`'s buckets at all — they
+point at no symbol, so a reverse-reachability search from a symbol never
+reaches them.
 
 `impact_of` additionally reports whether a matched symbol is exported from a
 file it recognises as a package entry point, as `exportedFromEntryPoint`.

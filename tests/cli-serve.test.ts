@@ -1,11 +1,21 @@
 import { describe, it, expect } from 'vitest'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { join } from 'node:path'
+import { appendFileSync } from 'node:fs'
+import { buildFixture } from './fixture-builder.js'
 
 const CLI = join(process.cwd(), 'dist/cli.js')
 
-/** Speaks one JSON-RPC initialize + tools/list exchange over stdio. */
-function listToolsOverStdio(): Promise<{ stdout: string; stderr: string }> {
+/**
+ * Speaks a JSON-RPC `initialize` + `notifications/initialized` handshake
+ * over stdio against `arch serve`, then sends any additional messages
+ * supplied by the caller. Collects everything written to stdout and stderr
+ * for the caller to inspect.
+ */
+function runStdioSession(
+  extraMessages: unknown[] = [],
+  timeoutMs = 4000,
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn('node', [CLI, 'serve'], { stdio: ['pipe', 'pipe', 'pipe'] })
     let stdout = ''
@@ -19,10 +29,15 @@ function listToolsOverStdio(): Promise<{ stdout: string; stderr: string }> {
       protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' },
     } })
     send({ jsonrpc: '2.0', method: 'notifications/initialized' })
-    send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
+    for (const msg of extraMessages) send(msg)
 
-    setTimeout(() => { child.kill(); resolvePromise({ stdout, stderr }) }, 4000)
+    setTimeout(() => { child.kill(); resolvePromise({ stdout, stderr }) }, timeoutMs)
   })
+}
+
+/** Speaks one JSON-RPC initialize + tools/list exchange over stdio. */
+function listToolsOverStdio(): Promise<{ stdout: string; stderr: string }> {
+  return runStdioSession([{ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }])
 }
 
 describe('arch serve', () => {
@@ -41,5 +56,39 @@ describe('arch serve', () => {
     for (const line of lines) {
       expect(() => JSON.parse(line)).not.toThrow()
     }
+  }, 20_000)
+
+  it('keeps stdout as pure JSON-RPC during a tool call that reindexes mid-request', async () => {
+    // A real index, built by the compiled CLI, exactly as a user would.
+    const fixture = buildFixture()
+    execFileSync('node', [CLI, 'index', fixture], { stdio: 'ignore' })
+
+    // Dirty the tree after indexing so the freshness gate has an actual
+    // delta to absorb inside the upcoming tool call, rather than hitting
+    // the no-op "already current" path. This is what exercises the
+    // mid-request incremental reindex — the exact hazard this test file
+    // exists to catch a regression in.
+    appendFileSync(
+      join(fixture, 'src/helper.ts'),
+      '\nexport function extra(): number {\n  return 2;\n}\n',
+    )
+
+    const { stdout } = await runStdioSession([
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+        name: 'get_repo_overview', arguments: { repo: fixture },
+      } },
+    ], 6000)
+
+    const lines = stdout.split('\n').filter(l => l.trim().length > 0)
+    expect(lines.length).toBeGreaterThan(0)
+    const responses = lines.map(line => {
+      expect(() => JSON.parse(line)).not.toThrow()
+      return JSON.parse(line) as { id?: number; result?: unknown; error?: unknown }
+    })
+
+    const callResponse = responses.find(r => r.id === 2)
+    expect(callResponse).toBeDefined()
+    expect(callResponse!.error).toBeUndefined()
+    expect(callResponse!.result).toBeDefined()
   }, 20_000)
 })
