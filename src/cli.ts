@@ -3,7 +3,9 @@ import { Command } from 'commander'
 import { existsSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { runColdIndex } from './indexer/pipeline.js'
-import { indexPathFor, gitHeadCommit } from './repo/repo-source.js'
+import { runIncrementalIndex } from './indexer/incremental.js'
+import { checkFreshness } from './indexer/freshness.js'
+import { indexPathFor } from './repo/repo-source.js'
 import { GraphStore } from './store/graph-store.js'
 
 const program = new Command()
@@ -18,18 +20,23 @@ program
   .argument('[repo]', 'path to the repository', '.')
   .option('-q, --quiet', 'suppress progress output')
   .option('-f, --force', 'delete an existing index (e.g. after a schema-version mismatch) and rebuild')
+  .option('-F, --full', 'force a full reindex instead of an incremental one')
   .description('Build the index for a repository')
-  .action(async (repo: string, options: { quiet?: boolean; force?: boolean }) => {
+  .action(async (repo: string, options: { quiet?: boolean; force?: boolean; full?: boolean }) => {
     const repoRoot = resolve(repo)
     const dbPath = indexPathFor(repoRoot)
 
     if (options.force && existsSync(dbPath)) unlinkSync(dbPath)
 
-    const report = await runColdIndex({
-      repoRoot,
-      dbPath,
-      onProgress: options.quiet ? undefined : message => process.stderr.write(`  ${message}\n`),
-    })
+    const onProgress = options.quiet ? undefined : (message: string) => process.stderr.write(`  ${message}\n`)
+
+    const report = options.full
+      ? { ...(await runColdIndex({ repoRoot, dbPath, onProgress })), changedFiles: 0, deletedFiles: 0, reparsedFiles: 0, fellBackToCold: true }
+      : await runIncrementalIndex({ repoRoot, dbPath, onProgress })
+
+    if (!options.full && !report.fellBackToCold) {
+      console.log(`Updated ${report.changedFiles} changed, ${report.deletedFiles} deleted (reparsed ${report.reparsedFiles})`)
+    }
 
     console.log(
       `Indexed ${report.filesIndexed} files ` +
@@ -49,33 +56,30 @@ program
     const repoRoot = resolve(repo)
     const dbPath = indexPathFor(repoRoot)
 
-    if (!existsSync(dbPath)) {
+    const freshness = checkFreshness(repoRoot, dbPath)
+
+    if (freshness.state === 'missing') {
       console.log(`No index for ${repoRoot}. Run "arch index ${repo}" first.`)
       return
     }
 
     const store = GraphStore.open(dbPath)
     try {
-      const indexedHead = store.getMeta('head_commit') ?? ''
-      const currentHead = gitHeadCommit(repoRoot) ?? ''
-      const indexedAt = store.getMeta('indexed_at')
-      const isComplete = store.getMeta('index_complete') === '1'
-
       console.log(`Repo:    ${repoRoot}`)
       console.log(`Index:   ${dbPath}`)
       console.log(`Files:   ${store.getMeta('files_indexed') ?? '0'}`)
       console.log(`Skipped: ${store.getMeta('files_skipped') ?? '0'}`)
       printSkipBreakdown(store.getMeta('files_skipped_by_reason'))
       console.log(`Edges:   ${store.edgeCount()}`)
-      console.log(`Built:   ${indexedAt ? new Date(Number(indexedAt)).toISOString() : 'unknown'}`)
+      console.log(`Built:   ${freshness.indexedAt ? new Date(Number(freshness.indexedAt)).toISOString() : 'unknown'}`)
 
-      if (!isComplete) {
+      if (freshness.state === 'incomplete') {
         console.log('State:   INCOMPLETE — a previous index did not finish. Re-run "arch index".')
-      } else if (indexedHead !== '' && currentHead !== '' && currentHead !== indexedHead) {
-        console.log(`State:   STALE — indexed at ${indexedHead.slice(0, 8)}, HEAD is ${currentHead.slice(0, 8)}.`)
+      } else if (freshness.state === 'stale') {
+        console.log(`State:   STALE — ${freshness.changedFiles} changed, ${freshness.deletedFiles} deleted since the last index.`)
       } else {
         console.log('State:   current')
-        if (currentHead === '') {
+        if (!freshness.headCommit) {
           console.log('Note:    not a git repository — staleness cannot be detected.')
         }
       }
