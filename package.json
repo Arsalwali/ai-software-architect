@@ -5,6 +5,7 @@
   "bin": { "arch": "./dist/cli.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -1,12 +1,11 @@
-import { mkdirSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { RepoParser } from '../parser/parser.js'
+import { mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { GraphStore, type EdgeInput, type ImportInput } from '../store/graph-store.js'
 import { gitHeadCommit } from '../repo/repo-source.js'
 import { discoverFiles } from './discover.js'
 import { resolveImport } from './resolve-imports.js'
 import { resolveCallsForFile } from './resolve-calls.js'
-import type { ParsedFile } from '../types.js'
+import { parseAll } from './parse-pool.js'
 
 export interface ColdIndexOptions {
   repoRoot: string
@@ -43,21 +42,23 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     const { files, skipped } = discoverFiles(repoRoot)
     onProgress?.(`discovered ${files.length} files, skipped ${skipped.length}`)
 
-    // Phases 2–3 — parse and persist nodes, in batches, discarding ASTs
-    const parser = await RepoParser.create()
+    // Phase 2 — parse once, across cores
+    const parsed = await parseAll({
+      repoRoot,
+      paths: files,
+      onBatch: (done, total) => onProgress?.(`parsed ${done}/${total}`),
+    })
+
     let parseErrors = 0
     let symbolCount = 0
+    for (const file of parsed) {
+      parseErrors += file.errors.length
+      symbolCount += file.symbols.length
+    }
 
-    for (let start = 0; start < files.length; start += batchSize) {
-      const batch: ParsedFile[] = []
-      for (const path of files.slice(start, start + batchSize)) {
-        const parsed = parseOne(parser, repoRoot, path)
-        parseErrors += parsed.errors.length
-        symbolCount += parsed.symbols.length
-        batch.push(parsed)
-      }
-      store.insertParsedFiles(batch)
-      onProgress?.(`parsed ${Math.min(start + batchSize, files.length)}/${files.length}`)
+    // Phase 3 — persist nodes in batches
+    for (let start = 0; start < parsed.length; start += batchSize) {
+      store.insertParsedFiles(parsed.slice(start, start + batchSize))
     }
 
     // Phase 4a — resolve imports
@@ -68,14 +69,13 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     const importRows: ImportInput[] = []
     const importedFileIds = new Map<number, number[]>()
 
-    for (const path of files) {
-      const fileId = fileIdByPath.get(path)
+    for (const file of parsed) {
+      const fileId = fileIdByPath.get(file.path)
       if (fileId === undefined) continue
-      const parsed = parseOne(parser, repoRoot, path)
       const targets: number[] = []
 
-      for (const raw of parsed.imports) {
-        const { path: resolvedPath, confidence } = resolveImport(path, raw.specifier, knownPaths)
+      for (const raw of file.imports) {
+        const { path: resolvedPath, confidence } = resolveImport(file.path, raw.specifier, knownPaths)
         const resolvedFileId = resolvedPath ? fileIdByPath.get(resolvedPath) ?? null : null
         if (resolvedFileId !== null) targets.push(resolvedFileId)
         importRows.push({
@@ -96,18 +96,15 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     const exportedByFile = store.exportedSymbolsByFile()
     const edges: EdgeInput[] = []
 
-    for (const path of files) {
-      const fileId = fileIdByPath.get(path)
-      if (fileId === undefined) continue
-      const parsed = parseOne(parser, repoRoot, path)
-      if (parsed.callSites.length === 0) continue
-
+    for (const file of parsed) {
+      const fileId = fileIdByPath.get(file.path)
+      if (fileId === undefined || file.callSites.length === 0) continue
       edges.push(...resolveCallsForFile({
         srcFileId: fileId,
         localSymbols: symbolsByFile.get(fileId) ?? [],
         importedFileIds: importedFileIds.get(fileId) ?? [],
         exportedByFile,
-        callSites: parsed.callSites,
+        callSites: file.callSites,
       }))
     }
 
@@ -133,14 +130,4 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
   } finally {
     store.close()
   }
-}
-
-function parseOne(parser: RepoParser, repoRoot: string, path: string): ParsedFile {
-  let source: string
-  try {
-    source = readFileSync(join(repoRoot, path), 'utf8')
-  } catch {
-    source = ''
-  }
-  return parser.parse(path, source)
 }
