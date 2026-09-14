@@ -109,6 +109,14 @@ function printSkipBreakdown(raw: string | undefined): void {
   console.log(`         (${summary})`)
 }
 
+program
+  .command('serve')
+  .description('Run the MCP server on stdio, for Claude Code and other MCP clients')
+  .action(async () => {
+    const { serveStdio } = await import('./mcp/stdio.js')
+    await serveStdio()
+  })
+
 try {
   await program.parseAsync(process.argv)
 } catch (error) {
