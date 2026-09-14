@@ -556,7 +556,11 @@ function hashOf(absolutePath: string): string | null {
 }
 ```
 
-Note the hash is computed over the raw Buffer. `RepoParser.parse` hashes the decoded utf8 string, and for the files that reach it the two agree because discovery has already excluded binaries. Task 3's equality invariant is what proves this holds in practice; if it ever diverges, that test fails loudly rather than the index silently thinking every file changed.
+> **Correction applied during execution.** This note originally said the hash was computed over the raw Buffer, and claimed that agreed with `RepoParser.parse`'s utf8-string hash "because discovery has already excluded binaries." That reasoning is wrong and the shipped code does not follow it.
+>
+> `readFileSync(path, 'utf8')` decodes lossily — invalid UTF-8 bytes become U+FFFD, which re-encodes to different bytes than the original — and `isBinary` in `discover.ts` only runs for files with no recognized language extension. So a `.ts` file containing a single Windows-1252 byte (a `// café` comment saved as latin-1) passes discovery as ordinary source, and its Buffer hash could never match the stored utf8-string hash. It would be classified `changed` on every incremental run forever, silently.
+>
+> The shipped `hashOf` therefore reads and hashes the utf8 STRING, exactly as the parser does. Both sides apply the same lossy decode, so the digests agree by construction for every file rather than by luck for ASCII ones.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -567,18 +571,7 @@ Expected: PASS, 7 tests.
 
 The note above is a real risk, so prove it rather than assume it. Run this one-off check and confirm it prints `AGREE`:
 
-```bash
-node --input-type=module -e "
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-const p = 'src/types.ts';
-const buf = createHash('sha256').update(readFileSync(p)).digest('hex');
-const str = createHash('sha256').update(readFileSync(p, 'utf8')).digest('hex');
-console.log(buf === str ? 'AGREE' : 'DIVERGE', buf.slice(0,8), str.slice(0,8));
-"
-```
-
-If it prints `DIVERGE`, stop and report — the change detector would then see every file as modified on every run, which makes incremental reindex do strictly more work than a cold index.
+Because `hashOf` now hashes the same utf8 string the parser hashes, agreement is structural rather than empirical and no probe is needed. What DOES need proving is that a file with invalid UTF-8 survives a round trip, which the covering test in Step 4 asserts directly: a `.ts` file containing a raw `0xE9` byte must come back `unchanged` after a cold index, not `changed`.
 
 - [ ] **Step 6: Commit**
 

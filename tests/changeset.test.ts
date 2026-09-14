@@ -76,4 +76,22 @@ describe('computeChangeSet', () => {
     expect(all).toContain('src/fresh.ts')
     expect(all).toContain('src/services/notify.ts')
   })
+
+  it('treats a file with invalid-UTF-8 bytes as unchanged once indexed', async () => {
+    // Write raw bytes, not a JS string, so the invalid UTF-8 byte (0xE9,
+    // a lone latin-1 'é') actually lands on disk instead of being
+    // re-encoded as valid UTF-8 by the string round trip.
+    writeFileSync(
+      join(fixture, 'src/latin.ts'),
+      Buffer.from([
+        ...Buffer.from('// caf', 'utf8'),
+        0xe9,
+        ...Buffer.from('\nexport function latin(): void {}\n', 'utf8'),
+      ]),
+    )
+    await runColdIndex({ repoRoot: fixture, dbPath })
+    const cs = changeSet()
+    expect(cs.unchanged).toContain('src/latin.ts')
+    expect(cs.changed).not.toContain('src/latin.ts')
+  })
 })
