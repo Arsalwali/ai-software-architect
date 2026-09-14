@@ -2,19 +2,25 @@
   "name": "ai-software-architect",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "arch": "./dist/cli.js" },
+  "bin": {
+    "arch": "./dist/cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
     "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@vscode/tree-sitter-wasm": "0.3.1",
     "better-sqlite3": "13.0.3",
     "commander": "15.0.0",
-    "web-tree-sitter": "0.27.0"
+    "web-tree-sitter": "0.27.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
