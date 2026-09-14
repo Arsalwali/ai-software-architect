@@ -1225,14 +1225,14 @@ export function checkFreshness(repoRoot: string, dbPath: string): Freshness {
   }
   if (!existsSync(dbPath)) return empty
 
-  let store: GraphStore
-  try {
-    store = GraphStore.open(dbPath)
-  } catch {
-    // Schema mismatch or corruption. Unusable is indistinguishable from
-    // absent for the caller's purposes, and both are fixed by reindexing.
-    return empty
-  }
+  // Do NOT wrap this in a try/catch mapping failure to `missing`. Spec §9
+  // treats a schema-version mismatch and a corrupt database as DIFFERENT
+  // cases: a mismatch must refuse to serve with no silent migration, while
+  // corruption may be discarded and rebuilt. Swallowing both would make
+  // `arch status` print "No index" and exit 0 on a schema mismatch, hiding
+  // the actionable `arch index --force` message GraphStore.open composes —
+  // and contradicting `arch index`, which would then throw.
+  const store = GraphStore.open(dbPath)
 
   try {
     const base: Freshness = {
