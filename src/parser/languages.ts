@@ -22,12 +22,21 @@ function def(id: string, wasmName: string, queryDirName: string, extensions: str
   }
 }
 
+// The wasm grammar and the query directory are chosen independently. The
+// TypeScript grammar is a syntactic superset of JavaScript, so `javascript`
+// and `jsx` deliberately load the TypeScript/TSX wasm grammars rather than
+// tree-sitter-javascript.wasm (whose grammar lacks TS-only node kinds that
+// the shared symbols.scm references, and so cannot compile that query at
+// all). `id` still reflects the source language, since it flows into
+// files.lang in the database and downstream reporting.
+//
 // Adding a language means adding one entry here plus a queries/<dir> with
 // symbols.scm, imports.scm and calls.scm. Nothing else in the codebase changes.
 export const LANGUAGES: LanguageDef[] = [
   def('typescript', 'typescript', 'typescript', ['.ts', '.mts', '.cts']),
   def('tsx', 'tsx', 'typescript', ['.tsx']),
-  def('javascript', 'javascript', 'typescript', ['.js', '.mjs', '.cjs', '.jsx']),
+  def('javascript', 'typescript', 'typescript', ['.js', '.mjs', '.cjs']),
+  def('jsx', 'tsx', 'typescript', ['.jsx']),
 ]
 
 const byExtension = new Map<string, LanguageDef>()

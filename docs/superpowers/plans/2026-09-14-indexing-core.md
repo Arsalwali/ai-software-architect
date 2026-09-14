@@ -15,6 +15,7 @@
 ## Global Constraints
 
 - Node 20+ required. Project is **ESM** (`"type": "module"` in `package.json`).
+- JavaScript and JSX load the TypeScript and TSX grammars, never `tree-sitter-javascript.wasm`. The shared query set names TS-only node types; web-tree-sitter validates node names at `Query` construction and throws `Bad node name 'type_identifier'` against the JS grammar.
 - Pinned dependency versions, exactly: `web-tree-sitter@0.27.0`, `@vscode/tree-sitter-wasm@0.3.1`, `better-sqlite3@13.0.3`, `commander@15.0.0`. **These two tree-sitter packages are ABI-coupled** — `tree-sitter-wasms` (a commonly suggested alternative) is built against tree-sitter CLI 0.20 and throws a dylink error on `Language.load` with web-tree-sitter 0.27. Do not substitute either package.
 - Confidence tier values, verbatim: `exact`, `resolved`, `heuristic`, `ambiguous`. `exact` is reserved and emitted by nothing in this plan.
 - Edge kind values, verbatim: `calls`, `extends`, `implements`, `instantiates`, `references`.
@@ -189,10 +190,20 @@ function def(id: string, wasmName: string, queryDirName: string, extensions: str
 
 // Adding a language means adding one entry here plus a queries/<dir> with
 // symbols.scm, imports.scm and calls.scm. Nothing else in the codebase changes.
+//
+// The grammar and the query directory are chosen independently. JavaScript and
+// JSX deliberately load the TypeScript and TSX grammars: TypeScript is a
+// syntactic superset of JavaScript, and the shared query set names TS-only node
+// types (`type_identifier`, `interface_declaration`) that the JavaScript grammar
+// does not define. web-tree-sitter validates node names when a Query is
+// constructed and offers no lenient mode, so pairing the shared queries with
+// tree-sitter-javascript.wasm throws at startup. The distinct `id` values are
+// kept so files.lang reports 'javascript' rather than mislabelling .js as TS.
 export const LANGUAGES: LanguageDef[] = [
   def('typescript', 'typescript', 'typescript', ['.ts', '.mts', '.cts']),
   def('tsx', 'tsx', 'typescript', ['.tsx']),
-  def('javascript', 'javascript', 'typescript', ['.js', '.mjs', '.cjs', '.jsx']),
+  def('javascript', 'typescript', 'typescript', ['.js', '.mjs', '.cjs']),
+  def('jsx', 'tsx', 'typescript', ['.jsx']),
 ]
 
 const byExtension = new Map<string, LanguageDef>()
@@ -218,7 +229,7 @@ export function loadLanguage(def: LanguageDef): Promise<Language> {
 }
 ```
 
-Note: the JavaScript entry deliberately reuses the `typescript` query directory. The TypeScript grammar's node types are a superset of JavaScript's for the constructs we capture, so one query set serves both.
+Note: `def()`'s second argument is the grammar wasm and its third is the query directory — they are chosen independently, which is what lets JavaScript and JSX reuse both the TypeScript grammars and the TypeScript query set. Verified against all three grammars: `typescript.wasm` parses plain JavaScript (including CommonJS `require`/`module.exports`) with no errors, while `javascript.wasm` cannot compile the shared query at all.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
