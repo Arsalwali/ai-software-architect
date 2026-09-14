@@ -448,6 +448,10 @@ export class GraphStore {
     return this.toEdgeRows(this.db.prepare(EDGE_SELECT + ' WHERE dst_symbol_id = ?').all(symbolId))
   }
 
+  edgesFromSymbol(symbolId: number): EdgeRow[] {
+    return this.toEdgeRows(this.db.prepare(EDGE_SELECT + ' WHERE src_symbol_id = ?').all(symbolId))
+  }
+
   private toEdgeRows(rows: unknown[]): EdgeRow[] {
     return (rows as Record<string, unknown>[]).map(r => ({
       srcFileId: r.src_file_id as number,
