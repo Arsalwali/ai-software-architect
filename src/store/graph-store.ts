@@ -72,6 +72,48 @@ export interface EdgeDetail {
   line: number
 }
 
+export interface SymbolHit {
+  id: number
+  fileId: number
+  path: string
+  name: string
+  kind: string
+  startLine: number
+  endLine: number
+  exported: boolean
+  signature: string | null
+  parentName: string | null
+}
+
+export interface FindSymbolsOptions {
+  name?: string
+  contains?: string
+  kind?: string
+  exported?: boolean
+  pathPrefix?: string
+  limit: number
+}
+
+const SYMBOL_SELECT = `
+  SELECT s.id, s.file_id, f.path, s.name, s.kind, s.start_line, s.end_line,
+         s.exported, s.signature, s.parent_name
+  FROM symbols s JOIN files f ON f.id = s.file_id`
+
+function toSymbolHit(r: Record<string, unknown>): SymbolHit {
+  return {
+    id: r.id as number,
+    fileId: r.file_id as number,
+    path: r.path as string,
+    name: r.name as string,
+    kind: r.kind as string,
+    startLine: r.start_line as number,
+    endLine: r.end_line as number,
+    exported: Boolean(r.exported),
+    signature: (r.signature as string | null) ?? null,
+    parentName: (r.parent_name as string | null) ?? null,
+  }
+}
+
 /** The only module in the project that touches SQLite. */
 export class GraphStore {
   private constructor(private readonly db: Database.Database) {}
@@ -317,6 +359,62 @@ export class GraphStore {
 
   clear(): void {
     this.db.exec('DELETE FROM edges; DELETE FROM imports; DELETE FROM symbols; DELETE FROM files;')
+  }
+
+  confidenceBreakdown(): Record<string, number> {
+    const rows = this.db.prepare(
+      'SELECT confidence, COUNT(*) AS n FROM edges GROUP BY confidence',
+    ).all() as Array<{ confidence: string; n: number }>
+    // Seed every tier so a zero is reported as 0 rather than going missing.
+    const out: Record<string, number> = {
+      exact: 0, resolved: 0, heuristic: 0, unresolved: 0, ambiguous: 0,
+    }
+    for (const r of rows) out[r.confidence] = r.n
+    return out
+  }
+
+  languageBreakdown(): Array<{ lang: string | null; files: number; symbols: number }> {
+    const rows = this.db.prepare(`
+      SELECT f.lang AS lang, COUNT(DISTINCT f.id) AS files, COUNT(s.id) AS symbols
+      FROM files f LEFT JOIN symbols s ON s.file_id = f.id
+      GROUP BY f.lang ORDER BY files DESC
+    `).all() as Array<{ lang: string | null; files: number; symbols: number }>
+    return rows.map(r => ({ lang: r.lang ?? null, files: r.files, symbols: r.symbols }))
+  }
+
+  totals(): { files: number; symbols: number; edges: number; imports: number } {
+    const one = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n
+    return {
+      files: one('SELECT COUNT(*) AS n FROM files'),
+      symbols: one('SELECT COUNT(*) AS n FROM symbols'),
+      edges: one('SELECT COUNT(*) AS n FROM edges'),
+      imports: one('SELECT COUNT(*) AS n FROM imports'),
+    }
+  }
+
+  symbolById(id: number): SymbolHit | undefined {
+    const row = this.db.prepare(`${SYMBOL_SELECT} WHERE s.id = ?`).get(id) as Record<string, unknown> | undefined
+    return row ? toSymbolHit(row) : undefined
+  }
+
+  findSymbols(options: FindSymbolsOptions): SymbolHit[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (options.name !== undefined) { where.push('s.name = ?'); params.push(options.name) }
+    if (options.contains !== undefined) { where.push('s.name LIKE ?'); params.push(`%${options.contains}%`) }
+    if (options.kind !== undefined) { where.push('s.kind = ?'); params.push(options.kind) }
+    if (options.exported !== undefined) { where.push('s.exported = ?'); params.push(options.exported ? 1 : 0) }
+    if (options.pathPrefix !== undefined) { where.push('f.path LIKE ?'); params.push(`${options.pathPrefix}%`) }
+
+    const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+    const rows = this.db.prepare(
+      `${SYMBOL_SELECT}${clause} ORDER BY LENGTH(s.name), s.name, f.path LIMIT ?`,
+    ).all(...params, options.limit) as Record<string, unknown>[]
+    return rows.map(toSymbolHit)
+  }
+
+  edgesToSymbol(symbolId: number): EdgeRow[] {
+    return this.toEdgeRows(this.db.prepare(EDGE_SELECT + ' WHERE dst_symbol_id = ?').all(symbolId))
   }
 
   private toEdgeRows(rows: unknown[]): EdgeRow[] {
