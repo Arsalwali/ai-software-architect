@@ -602,7 +602,9 @@ The correctness property worth the most in this plan. Everything else in Plan 2 
 >
 > **Hazard 2 — importers must be captured before deletion.** `filesImporting(fileId)` needs the id of a file that is about to be removed. Collect the dilation set first, as paths, then delete. Reversing the order silently produces an empty dilation and leaves stale edges pointing at symbols that no longer exist.
 >
-> The dilation is provably complete: a cross-file edge only exists when the source file resolved an import to the target (that is the entire candidate rule in `resolveCallsForFile`), so every file holding an edge into a changed file is, by construction, an importer of it.
+> **Hazard 3 — the importer walk alone is NOT complete, and the original text of this plan claimed it was.** The argument "a cross-file edge only exists when the source resolved an import to the target, so every file holding an edge into a changed file is an importer of it" holds for MODIFIED and DELETED files. It fails for ADDED ones: a file whose import could not be resolved holds no resolved import row and no edge into the new file, precisely because the target did not exist, so it never appears in the importer walk. Two real divergences follow — a new file that satisfies a previously-unresolved import leaves a stale `unresolved` edge, and a new `src/mod.ts` that shadows `src/mod/index.ts` in `resolveImport`'s candidate order leaves an existing edge silently pointing at the wrong file while still reading as `heuristic`.
+>
+> The dilation therefore needs a second pass: because `imports.raw_specifier` is persisted and `resolveImport` is pure, every stored import can be re-resolved against the post-change path set — computable from the ChangeSet alone as `changed ∪ unchanged`, before any mutation — and any file whose resolution shifted joins the dilation. Detection costs no parsing; only files that actually shifted get re-parsed.
 
 - [ ] **Step 1: Write the canonical snapshot helper**
 

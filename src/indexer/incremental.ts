@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { GraphStore, type EdgeInput, type ImportInput } from '../store/graph-store.js'
 import { gitHeadCommit } from '../repo/repo-source.js'
@@ -28,9 +28,16 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
 
   mkdirSync(dirname(dbPath), { recursive: true })
 
-  // A usable incremental run needs a complete index to build on. Anything
-  // else — missing, interrupted, schema-bumped — is a cold index, not a
-  // repair attempt on an unknown state.
+  // A usable incremental run needs a complete index to build on. A missing
+  // or interrupted index runs a cold index instead of attempting a repair on
+  // an unknown state. A schema-bumped index is NOT routed to the cold path:
+  // GraphStore.open throws for it, and that throw is left to propagate out
+  // of hasCompleteIndex rather than being swallowed, so it surfaces here
+  // directly. Per spec §9 ("refuse to serve; instruct the user to reindex —
+  // no silent migration"), the actionable "arch index --force" message the
+  // store already composes is what the caller sees; routing it through a
+  // cold index would either silently rebuild (spec violation) or re-throw
+  // the identical error by coincidence via a second open of the same file.
   if (!hasCompleteIndex(dbPath)) {
     onProgress?.('no complete index found, running a full index')
     const cold = await runColdIndex({ repoRoot, dbPath, onProgress })
@@ -53,6 +60,12 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
     store.setMeta('head_commit', '')
     store.setMeta('index_complete', '')
 
+    // The path set that will be "known" once this run's changes land, usable
+    // BEFORE any mutation because it is derived purely from the ChangeSet:
+    // `changed` already includes newly-added files, and `unchanged` already
+    // excludes deleted ones.
+    const futurePaths = new Set<string>([...changes.changed, ...changes.unchanged])
+
     // HAZARD 2: capture the dilation as PATHS before anything is deleted.
     const idsByPath = store.fileIdsByPath()
     const pathsById = store.pathsById()
@@ -65,6 +78,29 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
         if (importerPath) dilation.add(importerPath)
       }
     }
+
+    // The filesImporting walk above only finds importers through a RESOLVED
+    // edge into a changed file. An added file cannot have one pointing at it
+    // yet — by definition nothing resolved to it before it existed — so it
+    // is invisible to that walk even when it fixes a previously-unresolved
+    // import, or shadows an existing resolution to a different file entirely
+    // (e.g. "./mod" resolving to mod.ts instead of mod/index.ts once mod.ts
+    // is added). Catch both by recomputing each indexed file's import
+    // resolutions against the post-change path set and widening the
+    // dilation wherever a target would change. No parsing needed: the raw
+    // specifier is already stored and resolveImport is pure.
+    for (const [path, fileId] of idsByPath) {
+      if (dilation.has(path)) continue
+      for (const imp of store.importsForFile(fileId)) {
+        const { path: recomputed } = resolveImport(path, imp.rawSpecifier, futurePaths)
+        const stored = imp.resolvedFileId === null ? null : pathsById.get(imp.resolvedFileId) ?? null
+        if (recomputed !== stored) {
+          dilation.add(path)
+          break
+        }
+      }
+    }
+
     // A file that vanished cannot be re-parsed.
     for (const gone of changes.deleted) dilation.delete(gone)
 
@@ -142,12 +178,15 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
 }
 
 function hasCompleteIndex(dbPath: string): boolean {
-  let store: GraphStore
-  try {
-    store = GraphStore.open(dbPath)
-  } catch {
-    return false
-  }
+  // No file on disk is unambiguously "no usable index yet" -- there is
+  // nothing to fail to open. Anything that exists but throws on open
+  // (schema mismatch, corruption) is a different situation entirely and
+  // must NOT be swallowed into "false": per spec §9 a schema mismatch has to
+  // refuse to serve, not be silently treated as "run a cold index over it",
+  // so that throw is left to propagate to the caller.
+  if (!existsSync(dbPath)) return false
+
+  const store = GraphStore.open(dbPath)
   try {
     return store.getMeta('index_complete') === '1'
   } finally {

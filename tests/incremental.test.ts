@@ -97,6 +97,33 @@ describe('the equality invariant', () => {
   it('matches a full reindex when nothing changed at all', async () => {
     expect(await incrementalSnapshot()).toBe(await coldSnapshot())
   })
+
+  it('matches a full reindex when an added file satisfies a previously-unresolved import', async () => {
+    // consumer.ts imports a file that does not exist yet, so it indexes with
+    // an unresolved edge. It is never itself touched again: the dilation has
+    // to notice, on its own, that later.ts now satisfies that import.
+    writeFileSync(join(fixture, 'src/consumer.ts'),
+      'import { later } from "./later";\nexport function use(): void {\n  later();\n}\n')
+    await runColdIndex({ repoRoot: fixture, dbPath })
+
+    writeFileSync(join(fixture, 'src/later.ts'), 'export function later(): void {}\n')
+    expect(await incrementalSnapshot()).toBe(await coldSnapshot())
+  })
+
+  it('matches a full reindex when an added file shadows an existing resolved import', async () => {
+    // user2.ts resolves "./mod" to src/mod/index.ts because that is the only
+    // candidate that exists. Adding src/mod.ts changes which candidate wins
+    // (resolveImport probes base+ext before base/index.*), so the stored
+    // target becomes wrong even though user2.ts itself never changes.
+    mkdirSync(join(fixture, 'src/mod'), { recursive: true })
+    writeFileSync(join(fixture, 'src/mod/index.ts'), 'export function modFn(): number { return 1; }\n')
+    writeFileSync(join(fixture, 'src/user2.ts'),
+      'import { modFn } from "./mod";\nexport function use2(): number {\n  return modFn();\n}\n')
+    await runColdIndex({ repoRoot: fixture, dbPath })
+
+    writeFileSync(join(fixture, 'src/mod.ts'), 'export function modFn(): number { return 2; }\n')
+    expect(await incrementalSnapshot()).toBe(await coldSnapshot())
+  })
 })
 
 describe('runIncrementalIndex reporting', () => {
