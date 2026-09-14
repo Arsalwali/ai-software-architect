@@ -1,0 +1,422 @@
+# AI Software Architect — Design
+
+**Date:** 2026-09-14
+**Status:** Approved for planning
+
+## 1. Problem
+
+Answering architectural questions about an unfamiliar or large codebase — "where is
+authentication implemented?", "what breaks if I change this interface?", "where is the
+technical debt?" — currently means reading a lot of code or trusting an LLM that has
+seen only fragments of it.
+
+Pasting a repository into a model does not work. Large repositories exceed any context
+window, and even when they fit, the model has no reliable way to answer questions that
+are fundamentally *graph* questions: transitive impact, dependency cycles, coupling
+between modules.
+
+This project builds the missing layer: a structural index of a repository, exposed to
+Claude Code as MCP tools. Claude supplies the reasoning; the index supplies ground truth
+about structure.
+
+## 2. Goals
+
+- Answer architectural questions about real repositories, accurately enough to rely on
+  during a design review.
+- Work across languages without per-language work being a prerequisite for usefulness.
+- Be honest about uncertainty. A guess labelled as a guess is useful; a guess presented
+  as a fact is worse than no answer.
+- Index fast enough to stay current with uncommitted working-tree changes.
+- Require no running services. One command, one binary, one SQLite file.
+
+## 3. Non-goals
+
+- **Not** an agent. Claude Code is the agent. This project ships no model loop, no chat
+  interface, no prompt orchestration.
+- **Not** a code reader. Claude already has `Read`, `Grep`, and `Glob`. Tools return
+  pointers and relationships, not source dumps.
+- **Not** multi-tenant or hosted. Single user, local machine.
+- **Not** a visualization, in this phase. The query layer is designed so a UI can be
+  added later as a separate project, but no UI is built here.
+
+## 4. Locked decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Primary use | Daily-driver tool for real repositories | Prioritizes correctness and freshness over feature breadth |
+| Language coverage | Language-agnostic via tree-sitter | Breadth on day one; per-language depth is additive |
+| Interface | MCP server consumed by Claude Code | Removes the entire agent/UI subsystem from scope |
+| Knowledge base | Structural index + lazily cached module summaries | Whole-repo LLM preprocessing is expensive and goes stale |
+| Indexing strategy | Eager structural index, incremental via git | Tree-sitter is fast enough that lazy tiers add complexity without payoff |
+| Implementation | TypeScript / Node | Matches maintainer's stack; MCP SDK is TS-first; future TS resolver is native |
+| Storage | SQLite at `~/.arch/repos/<path-hash>/index.db` | No service to run; central location keeps repos clean and treats clones identically |
+| Repo access | Local-first | A GitHub URL is cloned to cache, then indexed as a local path |
+
+### 4.1 The central tradeoff
+
+Language-agnostic tree-sitter parsing yields *names*, not *bindings*. Import edges
+resolve deterministically against the filesystem, but call edges are matched by name.
+This is accepted deliberately, and mitigated by the confidence tier system (§6.2) rather
+than hidden. Every edge carries the strength of evidence behind it, and every tool
+result propagates it.
+
+The schema reserves an `exact` tier for bindings verified by a real type resolver.
+Nothing emits it yet. A TypeScript resolver using the TS compiler API is the intended
+first occupant, and can be added without schema changes.
+
+## 5. Architecture
+
+Eight modules. Everything language-specific sits behind one normalized record type, so
+adding a language means adding a directory, never editing core.
+
+```
+  repo-source ──► parser ──► resolver ──► graph-store ◄── summarizer
+   (git/clone)  (tree-sitter)  (edges +     (SQLite)       (lazy LLM)
+                               confidence)       ▲
+                                                 │
+                                           tool-surface
+                                          (search/graph/git)
+                                                 ▲
+                                                 │
+                                           mcp-server ◄── cli
+```
+
+### 5.1 `repo-source`
+
+Resolves a target to a working directory plus a git handle. A local path is used in
+place; a GitHub URL is cloned into the cache directory. Downstream modules see one
+interface, so local versus remote stops mattering past this boundary.
+
+### 5.2 `parser`
+
+The tree-sitter layer. Owns a registry mapping file extension to a grammar and a set of
+`.scm` query files. Its sole output is one normalized record per file:
+
+```ts
+interface ParsedFile {
+  path: string
+  lang: string | null
+  contentHash: string
+  symbols: Symbol[]
+  imports: RawImport[]
+  callSites: CallSite[]
+  errors: ParseError[]
+}
+```
+
+**This type is the load-bearing contract of the project.** No module downstream of the
+parser knows what language anything was written in. Adding Ruby support means supplying
+a grammar and four query files — `symbols`, `imports`, `calls`, `exports` — and changing
+nothing else. Write this type first and defend it.
+
+### 5.3 `resolver`
+
+Converts raw import specifiers and call sites into concrete edges, stamping each with a
+confidence tier. The default resolver is filesystem-based: relative path resolution,
+index-file probing, extension candidates. Per-language resolvers may override it (a
+TypeScript resolver reading `tsconfig` path aliases is the first planned one).
+
+### 5.4 `graph-store`
+
+The only module that touches SQLite. Exposes typed queries — `callersOf`,
+`dependentsOf`, `cyclesIn`, `couplingBetween` — rather than letting SQL leak upward.
+Graph algorithms run in-process over loaded edge sets.
+
+### 5.5 `summarizer`
+
+Lazy, cached, LLM-generated module summaries. Invoked by tools, never by the indexer.
+Cache key is the module subtree's git tree-hash, which means invalidation is automatic on
+content change and summaries are shared across branches with identical subtrees.
+
+### 5.6 `tool-surface`
+
+MCP tool implementations. Pure composition over `graph-store`, the git handle, and
+ripgrep. Contains no parsing and no storage logic.
+
+### 5.7 `mcp-server` and `cli`
+
+Two entry points over one core. The CLI exists because the first index of a large
+repository must not happen inside a tool call that Claude is blocked on. Commands:
+`arch index`, `arch reindex`, `arch status`.
+
+## 6. Data model
+
+Six tables, deliberately flat — every interesting question is a traversal or an
+aggregate.
+
+```sql
+files      (id, path, lang, content_hash, loc, last_commit, error_count, indexed_at)
+symbols    (id, file_id, name, kind, start_line, end_line,
+            exported, signature, parent_symbol_id)
+imports    (id, file_id, raw_specifier, resolved_file_id, kind, confidence, line)
+edges      (id, src_symbol_id, dst_symbol_id, dst_name, kind, confidence, line)
+summaries  (module_path, tree_hash, summary, model, created_at)
+meta       (key, value)   -- schema_version, head_commit, indexed_at, counts
+```
+
+Indexes on `symbols(name)`, `symbols(file_id)`, `edges(src_symbol_id)`,
+`edges(dst_symbol_id)`, `imports(resolved_file_id)`, `files(path)`.
+
+`edges.kind` is one of `calls | extends | implements | instantiates | references`.
+
+### 6.1 Modules are directories
+
+There is no `modules` table. A module *is* a directory path. Module-level edges are
+aggregations computed from file edges on demand. This removes an entire class of
+synchronization bug at negligible query cost.
+
+### 6.2 Confidence tiers
+
+| Tier | Meaning |
+|---|---|
+| `exact` | A real type resolver verified this binding. Reserved; nothing emits it yet. |
+| `resolved` | An import specifier deterministically resolved to a file on disk. |
+| `heuristic` | A called name matched exactly one symbol reachable from the file's imports. |
+| `ambiguous` | The name matched multiple candidates. **All candidates are stored.** |
+
+Storing ambiguous matches rather than discarding them is a deliberate inversion of the
+obvious instinct. Under-reporting on "what could break?" is the failure mode that
+destroys trust permanently; over-reporting with a visible label costs the reader a few
+seconds. Ambiguity is surfaced, never dropped.
+
+### 6.3 Call resolution
+
+For a call to `foo()` in file F, the candidate set is: symbols declared in F, plus
+symbols imported into F through `resolved` imports.
+
+- Exactly one candidate → `heuristic` edge.
+- Multiple candidates → `ambiguous` edges to all of them.
+- Zero candidates → stored as an unresolved call with `dst_name` set and
+  `dst_symbol_id` null. This keeps external and standard-library calls visible without
+  polluting the graph with phantom nodes.
+
+### 6.4 Derived metrics
+
+Computed deterministically from the graph, with no LLM involvement:
+
+- Afferent coupling (`Ca`) and efferent coupling (`Ce`) per module.
+- Instability, `I = Ce / (Ca + Ce)`.
+- Strongly-connected components via Tarjan, at file and module scope.
+- Fan-in / fan-out outliers.
+- Exported symbols with zero inbound edges.
+
+### 6.5 Sizing
+
+A 5,000-file repository is estimated at roughly 250,000 symbols and 500,000 edges —
+a few hundred megabytes of SQLite, with millisecond queries given the indexes above.
+
+## 7. Indexing pipeline
+
+Six phases. The ordering constraint: a call cannot be resolved until every symbol in the
+repository exists, so nodes and edges are separate passes.
+
+```
+1. discover ─► 2. parse ─► 3. persist nodes ─► 4. resolve ─► 5. persist edges ─► 6. finalize
+```
+
+**1. Discover.** `git ls-files`, not a filesystem walk — faster, and `.gitignore` is
+handled correctly for free. Filter to known extensions; drop vendored trees
+(`node_modules`, `vendor`, `dist`, `.venv`); skip files over ~1 MB or matching a
+minified-bundle signature. Every skip is recorded with a reason.
+
+**2. Parse.** CPU-bound and embarrassingly parallel: a `worker_threads` pool sized to
+core count. Files stream in batches of ~500 — parse, normalize to `ParsedFile`, persist,
+discard the AST. ASTs are never retained across batches, which bounds memory independent
+of repository size.
+
+**3. Persist nodes.** `files` and `symbols`, one transaction per batch.
+
+**4. Resolve.** Single-threaded global join, two sub-passes. Imports first: each
+specifier probed against the filesystem by the default or language-specific resolver,
+producing `resolved` edges. Then call sites: build an in-memory `name → symbol[]` index
+read back from SQLite, and apply §6.3 to each call site.
+
+**5. Persist edges.** Bulk insert.
+
+**6. Finalize.** Write `meta` and run `ANALYZE`. `meta.head_commit` is written **last and
+only on success**, so an interrupted run leaves the index visibly incomplete and the next
+run starts clean rather than resuming into a half-state.
+
+### 7.1 Incremental re-index
+
+`git diff --name-status <meta.head_commit> HEAD` supplies the committed delta.
+`git status --porcelain` supplies uncommitted working-tree changes — **required**, not
+optional: "what will this break?" is asked about code that has not been committed yet,
+and an index that only sees HEAD is blind at exactly the moment it matters.
+
+Changed files have their rows deleted and are re-parsed. Resolution then re-runs over a
+**one-hop dilation**: the changed files plus every file that imports them. Restricting
+re-resolution to changed files alone is incorrect — renaming a symbol invalidates edges
+pointing at it, and adding an export can newly resolve calls that previously dangled.
+The dilation is bounded and typically a few dozen files.
+
+Deleted files cascade-delete their rows; edges pointing at them revert to unresolved.
+
+Summary invalidation walks each changed file's ancestor directories and drops any cached
+summary whose `tree_hash` no longer matches.
+
+### 7.2 Staleness policy
+
+Every tool call cheaply compares HEAD plus a working-tree dirty hash against `meta`.
+
+- Under ~50 changed files: auto-reindex inline. Sub-second; the caller does not notice.
+- At or above that threshold: serve results annotated `stale: true` with the change
+  count and a prompt to run `arch index`. Blocking a tool call for a full minute is worse
+  than a labelled stale answer.
+
+## 8. Tool surface
+
+**Governing principle: the index is a map, not the territory.** Claude Code already
+reads code well. These tools answer what `Read` and `Grep` cannot — where to look, and
+how things connect. Tools return `file:line` pointers and relationships, not source.
+
+### Orientation
+
+- **`get_repo_overview()`** — languages and counts, top-level module tree with sizes,
+  detected entry points (`package.json` bin/main, `main()` functions, route files), key
+  config files, git summary. Fully structural and cheap. The natural first call for
+  "explain this architecture."
+- **`describe_module(path)`** — cached module summary, public surface (exported
+  symbols), dependencies and dependents with edge counts, coupling metrics, contained
+  files.
+
+### Search and navigation
+
+- **`search_code(query, {kind, lang, path, limit})`** — hybrid: indexed symbol-name
+  matches unioned with ripgrep full-text, ranked exact-symbol → partial-symbol → text.
+  The workhorse for "where is authentication implemented?"
+- **`get_symbol(name, {file})`** — definition site, signature, doc comment, exported
+  flag, caller and callee counts.
+
+### Graph traversal
+
+- **`get_dependencies(target, {direction, depth, kind, min_confidence})`** — `target` is
+  a file, module, or symbol; `direction` is `in` or `out`. This single parameterized tool
+  subsumes callers-of, callees-of, imports, and imported-by. Four near-identical tools
+  would only give the agent four chances to choose wrong.
+- **`impact_of(symbol, {max_depth})`** — transitive reverse-reachability, bucketed by
+  confidence tier and grouped by module. Reports in the shape "47 references — 0
+  verified, 39 likely, 8 ambiguous, across 6 modules." Also flags whether the symbol is
+  exported at a package boundary, since impact may then extend outside the repository.
+- **`trace_flow(entry, {max_depth})`** — forward call-graph walk from an entry point,
+  returned as a tree annotated with files and module boundaries crossed. Chained after
+  `search_code`, this answers "what happens when a customer places an order?"
+
+### Analysis
+
+Deterministic aggregates; no LLM involvement.
+
+- **`find_cycles({scope, min_size})`** — Tarjan SCCs at file or module scope, ranked by
+  size and edge weight.
+- **`get_coupling({scope, top_n})`** — repository-wide coupling ranking: `Ca`, `Ce`, and
+  instability per module, plus the heaviest module-to-module edge pairs. Answers "which
+  modules are tightly coupled?" at whole-repo scope, where `describe_module` answers it
+  for one module at a time.
+- **`find_hotspots({top_n})`** — technical-debt candidates, ranked by structural signals
+  (size, fan-in/out, cycle membership, instability) multiplied by git signals (commit
+  churn over a trailing window, default 180 days and configurable, distinct author count, bug-fix commit ratio by message
+  pattern). Neither half works alone: a large stable file is fine; a small thrashing one
+  is not.
+
+  `find_hotspots` additionally surfaces **co-change coupling** — files frequently
+  committed together despite having no edge between them. This is logical coupling,
+  invisible to static analysis, and often where the real architectural decay is.
+
+### Deliberately not tools
+
+"Migrate this to microservices" and "create an ADR" are compositions: Claude calls
+`find_cycles`, `find_hotspots`, and `describe_module`, then reasons and writes.
+Dedicated tools would bake our opinion into what should be the model's judgment. The ADR
+ships as an MCP **prompt** (a template), not a tool.
+
+### 8.1 Rules every tool obeys
+
+1. **Truncate loudly.** Any capped result carries `truncated: true` and `total: N`. A
+   silently trimmed list is a wrong answer wearing a right answer's clothes.
+2. **Confidence travels with the data**, from edge to response.
+3. **Point, don't dump.** Return `file:line`.
+4. **Staleness is always visible** (§7.2).
+
+### 8.2 Minimum viable surface
+
+If the build needs to ship earlier: `get_repo_overview`, `search_code`,
+`get_dependencies`, and `impact_of` make the tool useful on day one. The remaining six
+are additive and require no schema change.
+
+## 9. Error handling and degradation
+
+The system degrades in visible steps. Silence is never an acceptable failure mode.
+
+| Condition | Behavior |
+|---|---|
+| Unknown language | File gets a `files` row with `lang: null`. It appears in the tree and stays greppable, without symbols. Never silently omitted. |
+| Parse errors | Tree-sitter error recovery yields a partial tree. Keep what parsed, increment `files.error_count`. Report in aggregate: "indexed 4,812 files, 23 with parse errors." |
+| Unresolvable import | `imports.resolved_file_id` null, specifier retained. Commonly a third-party package; visible as such. |
+| Unresolvable call | Stored with `dst_name`, null `dst_symbol_id` (§6.3). |
+| Schema version mismatch | Refuse to serve; instruct the user to reindex. No silent migration. |
+| Interrupted index | `meta.head_commit` absent, so the index reads as incomplete and the next run starts clean (§7 phase 6). |
+| Corrupt database | Detected on open; the directory is discarded and a full reindex is offered. |
+| Summarizer failure or no API key | `describe_module` returns structural data with `summary: null` and a reason. Every other tool is unaffected — the summary layer is strictly additive. |
+| Repository is not a git repo | Indexing proceeds with filesystem walk and gitignore parsing; git-dependent tools (`find_hotspots` churn signals) return a clear unavailability reason. |
+
+## 10. Testing strategy
+
+**Fixture repositories are the backbone.** A set of small, hand-built repositories
+committed to the test suite, each with a known-correct expected graph: one per supported
+language, plus targeted fixtures for a known import cycle, a deliberately ambiguous name
+collision, a renamed symbol, and a deleted file. Assertions run against the expected
+graph, not against snapshots — a snapshot test tells you something changed, and we need
+to know whether it became *wrong*.
+
+Layered from there:
+
+- **Parser** — per language, `ParsedFile` output asserted against hand-written expected
+  symbols, imports, and call sites. Includes a deliberately malformed file asserting
+  partial recovery.
+- **Resolver** — tier assignment is the highest-risk logic in the project and gets the
+  densest tests: relative paths, index files, extension probing, ambiguous collisions
+  producing fan-out, and unresolved external calls.
+- **Graph store** — cycle detection against fixtures with known SCCs; coupling metrics
+  against hand-computed `Ca`/`Ce` values.
+- **Incremental indexing** — the correctness property worth the most: for a fixture
+  repository, assert that *incremental reindex after a commit produces a byte-identical
+  graph to a full reindex of the same state*. This single invariant catches the entire
+  class of stale-edge and dilation bugs, which are otherwise near-impossible to find.
+- **Tools** — contract tests on response shape, truncation flags, and confidence
+  propagation.
+- **Scale smoke test** — index a large real open-source repository in CI, asserting the
+  performance targets in §11 and that error counts stay within bounds.
+
+## 11. Performance targets
+
+| Operation | Target |
+|---|---|
+| Cold index, 5,000 files | ~60 seconds |
+| Incremental reindex, 5–20 changed files | under 1 second |
+| Graph query (`get_dependencies`, `impact_of`) | under 100 ms |
+| `find_cycles`, whole repo | under 2 seconds |
+| Memory ceiling during indexing | bounded by batch size, independent of repo size |
+
+## 12. Build order
+
+Each milestone is independently verifiable.
+
+1. **`ParsedFile` contract and the parser** for one language, with fixtures. The contract
+   is defended here or never.
+2. **Schema and `graph-store`**, with node persistence.
+3. **Import resolution** and the confidence tier system.
+4. **Call resolution**, completing the graph.
+5. **CLI `index` / `status`**, full cold path working end to end.
+6. **Incremental reindex**, with the full-versus-incremental equality invariant.
+7. **MCP server and the four core tools** (§8.2). *Usable from here onward.*
+8. **Remaining tools**, including git-signal analysis.
+9. **Summarizer**, lazily cached.
+10. **Additional language grammars** — additive, one directory each.
+
+## 13. Deferred
+
+- TypeScript deep resolver via the compiler API, filling the `exact` tier.
+- Interactive architecture visualization, as a separate project over a read-only query
+  layer.
+- Multi-repository indexing and cross-repository edges.
+- Cross-language edge detection (for example, the React Native JS↔native bridge).
