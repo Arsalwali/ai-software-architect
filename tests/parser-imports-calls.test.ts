@@ -10,6 +10,7 @@ export class Service {
 }
 function internal() { return new Service(); }
 topLevelCall();
+export const handler = async (req) => { return notify(2); };
 `
 
 let parser: RepoParser
@@ -39,6 +40,11 @@ describe('call-site extraction', () => {
     expect(byName.get('helper')!.enclosingSymbol).toBe('run')
     expect(byName.get('Service')!.enclosingSymbol).toBe('internal')
     expect(byName.get('topLevelCall')!.enclosingSymbol).toBeNull()
+  })
+
+  it('attributes a call inside an arrow function assigned to a const to the const name', () => {
+    const calls = parser.parse('src/a.ts', SOURCE).callSites
+    expect(calls.find(c => c.name === 'notify')!.enclosingSymbol).toBe('handler')
   })
 
   it('distinguishes instantiation from invocation', () => {
