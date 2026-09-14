@@ -1,0 +1,79 @@
+#!/usr/bin/env node
+import { Command } from 'commander'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { runColdIndex } from './indexer/pipeline.js'
+import { indexPathFor, gitHeadCommit } from './repo/repo-source.js'
+import { GraphStore } from './store/graph-store.js'
+
+const program = new Command()
+
+program
+  .name('arch')
+  .description('Index a repository into a queryable architecture graph')
+  .version('0.1.0')
+
+program
+  .command('index')
+  .argument('[repo]', 'path to the repository', '.')
+  .option('-q, --quiet', 'suppress progress output')
+  .description('Build the index for a repository')
+  .action(async (repo: string, options: { quiet?: boolean }) => {
+    const repoRoot = resolve(repo)
+    const dbPath = indexPathFor(repoRoot)
+
+    const report = await runColdIndex({
+      repoRoot,
+      dbPath,
+      onProgress: options.quiet ? undefined : message => process.stderr.write(`  ${message}\n`),
+    })
+
+    console.log(
+      `Indexed ${report.filesIndexed} files ` +
+      `(${report.symbols} symbols, ${report.edges} edges) ` +
+      `in ${(report.durationMs / 1000).toFixed(1)}s`,
+    )
+    if (report.filesSkipped > 0) console.log(`Skipped ${report.filesSkipped} files`)
+    if (report.parseErrors > 0) console.log(`${report.parseErrors} parse errors (partial results kept)`)
+    console.log(`Index: ${dbPath}`)
+  })
+
+program
+  .command('status')
+  .argument('[repo]', 'path to the repository', '.')
+  .description('Report index freshness for a repository')
+  .action((repo: string) => {
+    const repoRoot = resolve(repo)
+    const dbPath = indexPathFor(repoRoot)
+
+    if (!existsSync(dbPath)) {
+      console.log(`No index for ${repoRoot}. Run "arch index ${repo}" first.`)
+      return
+    }
+
+    const store = GraphStore.open(dbPath)
+    try {
+      const indexedHead = store.getMeta('head_commit') ?? ''
+      const currentHead = gitHeadCommit(repoRoot) ?? ''
+      const indexedAt = store.getMeta('indexed_at')
+
+      console.log(`Repo:    ${repoRoot}`)
+      console.log(`Index:   ${dbPath}`)
+      console.log(`Files:   ${store.getMeta('files_indexed') ?? '0'}`)
+      console.log(`Skipped: ${store.getMeta('files_skipped') ?? '0'}`)
+      console.log(`Edges:   ${store.edgeCount()}`)
+      console.log(`Built:   ${indexedAt ? new Date(Number(indexedAt)).toISOString() : 'unknown'}`)
+
+      if (indexedHead === '') {
+        console.log('State:   INCOMPLETE — a previous index did not finish. Re-run "arch index".')
+      } else if (currentHead && currentHead !== indexedHead) {
+        console.log(`State:   STALE — indexed at ${indexedHead.slice(0, 8)}, HEAD is ${currentHead.slice(0, 8)}.`)
+      } else {
+        console.log('State:   current')
+      }
+    } finally {
+      store.close()
+    }
+  })
+
+await program.parseAsync(process.argv)
