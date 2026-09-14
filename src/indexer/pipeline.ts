@@ -34,8 +34,11 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
 
   try {
     // Phase 6's guarantee starts here: clear head_commit so an interrupted run
-    // is visibly incomplete rather than silently half-written.
+    // is visibly incomplete rather than silently half-written. head_commit
+    // alone can't carry that signal for non-git repos (it's '' on success
+    // there too), so index_complete is a dedicated completion flag.
     store.setMeta('head_commit', '')
+    store.setMeta('index_complete', '')
     store.clear()
 
     // Phase 1 — discover
@@ -111,13 +114,15 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     // Phase 5 — persist edges
     store.insertEdges(edges)
 
-    // Phase 6 — finalize. head_commit is written last and only on success.
+    // Phase 6 — finalize. head_commit and index_complete are written last
+    // and only on success.
     store.analyze()
     store.setMeta('indexed_at', String(Date.now()))
     store.setMeta('files_indexed', String(files.length))
     store.setMeta('files_skipped', String(skipped.length))
     store.setMeta('repo_root', repoRoot)
     store.setMeta('head_commit', gitHeadCommit(repoRoot) ?? '')
+    store.setMeta('index_complete', '1')
 
     return {
       filesIndexed: files.length,

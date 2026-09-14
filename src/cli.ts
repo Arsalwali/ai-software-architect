@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import { existsSync } from 'node:fs'
+import { existsSync, unlinkSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { runColdIndex } from './indexer/pipeline.js'
 import { indexPathFor, gitHeadCommit } from './repo/repo-source.js'
@@ -17,10 +17,13 @@ program
   .command('index')
   .argument('[repo]', 'path to the repository', '.')
   .option('-q, --quiet', 'suppress progress output')
+  .option('-f, --force', 'delete an existing index (e.g. after a schema-version mismatch) and rebuild')
   .description('Build the index for a repository')
-  .action(async (repo: string, options: { quiet?: boolean }) => {
+  .action(async (repo: string, options: { quiet?: boolean; force?: boolean }) => {
     const repoRoot = resolve(repo)
     const dbPath = indexPathFor(repoRoot)
+
+    if (options.force && existsSync(dbPath)) unlinkSync(dbPath)
 
     const report = await runColdIndex({
       repoRoot,
@@ -56,6 +59,7 @@ program
       const indexedHead = store.getMeta('head_commit') ?? ''
       const currentHead = gitHeadCommit(repoRoot) ?? ''
       const indexedAt = store.getMeta('indexed_at')
+      const isComplete = store.getMeta('index_complete') === '1'
 
       console.log(`Repo:    ${repoRoot}`)
       console.log(`Index:   ${dbPath}`)
@@ -64,12 +68,15 @@ program
       console.log(`Edges:   ${store.edgeCount()}`)
       console.log(`Built:   ${indexedAt ? new Date(Number(indexedAt)).toISOString() : 'unknown'}`)
 
-      if (indexedHead === '') {
+      if (!isComplete) {
         console.log('State:   INCOMPLETE — a previous index did not finish. Re-run "arch index".')
-      } else if (currentHead && currentHead !== indexedHead) {
+      } else if (indexedHead !== '' && currentHead !== '' && currentHead !== indexedHead) {
         console.log(`State:   STALE — indexed at ${indexedHead.slice(0, 8)}, HEAD is ${currentHead.slice(0, 8)}.`)
       } else {
         console.log('State:   current')
+        if (currentHead === '') {
+          console.log('Note:    not a git repository — staleness cannot be detected.')
+        }
       }
     } finally {
       store.close()
