@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import { join } from 'node:path'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -92,6 +92,57 @@ describe('the tools answer real questions', () => {
   it('impact_of explains itself when a symbol is unknown', async () => {
     const r = await call('impact_of', { repo: fixture, symbol: 'definitelyNotHere' })
     expect(r.result.note).toMatch(/not found/i)
+  })
+})
+
+describe('impact_of passes repoRoot through, so package.json entry points are detected', () => {
+  // The shared fixture's src/index.ts exports nothing, so it cannot prove
+  // this: exportedFromEntryPoint would read false there regardless of
+  // whether repoRoot reaches impactOf. This dedicated fixture (following
+  // the pattern in tests/tools-impact.test.ts) declares its entry point
+  // ONLY via package.json's "main", at a non-conventional basename
+  // (src/public.ts, not index.ts/main.ts/...), so the assertion below can
+  // only pass if the MCP handler actually threads repoRoot into impactOf.
+  let entryFixture: string
+  let entryClient: Client
+
+  beforeAll(async () => {
+    entryFixture = mkdtempSync(join(tmpdir(), 'arch-mcp-entry-'))
+    mkdirSync(join(entryFixture, 'src'), { recursive: true })
+    writeFileSync(
+      join(entryFixture, 'src/public.ts'),
+      'export function DeclaredEntry(): number {\n  return 2;\n}\n',
+    )
+    writeFileSync(
+      join(entryFixture, 'src/consumer.ts'),
+      'import { DeclaredEntry } from "./public";\n\n' +
+      'export function useIt(): number {\n  return DeclaredEntry();\n}\n',
+    )
+    writeFileSync(
+      join(entryFixture, 'package.json'),
+      JSON.stringify({ name: 'mcp-entry-fixture', main: 'src/public.ts' }, null, 2),
+    )
+
+    const entryDbPath = join(mkdtempSync(join(tmpdir(), 'arch-mcp-entry-db-')), 'index.db')
+    await runColdIndex({ repoRoot: entryFixture, dbPath: entryDbPath })
+
+    const entryServer = createArchServer({ dbPathOverride: () => entryDbPath })
+    const [entryClientTransport, entryServerTransport] = InMemoryTransport.createLinkedPair()
+    entryClient = new Client({ name: 'entry-test-client', version: '1.0.0' })
+    await Promise.all([
+      entryServer.connect(entryServerTransport),
+      entryClient.connect(entryClientTransport),
+    ])
+  })
+
+  it('flags a symbol declared as package.json "main" even though its filename is not conventional', async () => {
+    const res = await entryClient.callTool({
+      name: 'impact_of',
+      arguments: { repo: entryFixture, symbol: 'DeclaredEntry' },
+    })
+    if (res.isError) throw new Error(String((res.content as any)[0]?.text))
+    const body = JSON.parse(String((res.content as any)[0].text))
+    expect(body.result.exportedFromEntryPoint).toBe(true)
   })
 })
 

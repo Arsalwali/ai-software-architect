@@ -84,6 +84,26 @@ describe('getDependencies at file level', () => {
     const r = getDependencies(store, { target: 'src/services', direction: 'out', depth: 1, limit: 50 })
     expect(r.nodes.map(n => n.path)).toContain('src/helper.ts')
   })
+
+  it('minConfidence is not a silent no-op for a file target: a floor above "resolved" yields nothing', () => {
+    const unfiltered = getDependencies(store, { target: 'src/services/order.ts', direction: 'out', depth: 1, limit: 50 })
+    expect(unfiltered.nodes.length).toBeGreaterThan(0)
+
+    const strict = getDependencies(
+      store, { target: 'src/services/order.ts', direction: 'out', depth: 1, minConfidence: 'exact', limit: 50 },
+    )
+    expect(strict.nodes).toHaveLength(0)
+  })
+
+  it('minConfidence is not a silent no-op for a module target: a floor above "resolved" yields nothing', () => {
+    const unfiltered = getDependencies(store, { target: 'src/services', direction: 'out', depth: 1, limit: 50 })
+    expect(unfiltered.nodes.length).toBeGreaterThan(0)
+
+    const strict = getDependencies(
+      store, { target: 'src/services', direction: 'out', depth: 1, minConfidence: 'exact', limit: 50 },
+    )
+    expect(strict.nodes).toHaveLength(0)
+  })
 })
 
 describe('getDependencies at symbol level', () => {

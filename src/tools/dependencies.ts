@@ -76,6 +76,12 @@ export function getDependencies(store: GraphStore, options: DependencyOptions): 
 function fileLevel(store: GraphStore, target: ResolvedTarget, options: DependencyOptions): DependencyNode[] {
   const pathsById = store.pathsById()
   const idsByPath = store.fileIdsByPath()
+  // File-level nodes are always emitted with confidence 'resolved' (import
+  // edges carry no independent confidence tier). Apply the same
+  // CONFIDENCE_RANK floor traverseSymbols() applies to symbol edges, so
+  // minConfidence isn't a silent no-op for file/directory targets: a floor
+  // above 'resolved' yields nothing, a floor at or below it keeps everything.
+  const floor = options.minConfidence === undefined ? -1 : CONFIDENCE_RANK[options.minConfidence]
 
   const startIds = target.kind === 'file'
     ? [idsByPath.get(target.resolved)!]
@@ -100,6 +106,7 @@ function fileLevel(store: GraphStore, target: ResolvedTarget, options: Dependenc
         if (seen.has(neighbour)) continue
         seen.add(neighbour)
         next.push(neighbour)
+        if (CONFIDENCE_RANK.resolved < floor) continue
         out.push({
           path: pathsById.get(neighbour) ?? '?',
           symbolName: null,
