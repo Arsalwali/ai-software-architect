@@ -91,6 +91,7 @@ export interface FindSymbolsOptions {
   kind?: string
   exported?: boolean
   pathPrefix?: string
+  lang?: string
   limit: number
 }
 
@@ -398,6 +399,34 @@ export class GraphStore {
   }
 
   findSymbols(options: FindSymbolsOptions): SymbolHit[] {
+    const { clause, params } = this.symbolWhereClause(options)
+    const rows = this.db.prepare(
+      `${SYMBOL_SELECT}${clause} ORDER BY LENGTH(s.name), s.name, f.path LIMIT ?`,
+    ).all(...params, options.limit) as Record<string, unknown>[]
+    return rows.map(toSymbolHit)
+  }
+
+  /**
+   * True count of symbols matching the same filters `findSymbols` accepts,
+   * unconstrained by any `LIMIT`. Built from the identical WHERE clause so
+   * the count can never disagree with the rows `findSymbols` would return
+   * for the same filters — a hand-duplicated clause here would eventually
+   * drift and produce a total that doesn't match what was actually queried.
+   */
+  countSymbols(options: Omit<FindSymbolsOptions, 'limit'>): number {
+    const { clause, params } = this.symbolWhereClause(options)
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS c FROM symbols s JOIN files f ON f.id = s.file_id${clause}`,
+    ).get(...params) as { c: number }
+    return row.c
+  }
+
+  /**
+   * Shared WHERE-clause builder for `findSymbols`/`countSymbols`. Kept as
+   * the single source of truth for how each filter maps to SQL so the two
+   * methods can never see a different set of rows for the same filters.
+   */
+  private symbolWhereClause(options: Omit<FindSymbolsOptions, 'limit'>): { clause: string; params: unknown[] } {
     const where: string[] = []
     const params: unknown[] = []
     if (options.name !== undefined) { where.push('s.name = ?'); params.push(options.name) }
@@ -409,12 +438,10 @@ export class GraphStore {
     if (options.kind !== undefined) { where.push('s.kind = ?'); params.push(options.kind) }
     if (options.exported !== undefined) { where.push('s.exported = ?'); params.push(options.exported ? 1 : 0) }
     if (options.pathPrefix !== undefined) { where.push(`f.path LIKE ? ESCAPE '\\'`); params.push(`${options.pathPrefix}%`) }
+    if (options.lang !== undefined) { where.push('f.lang = ?'); params.push(options.lang) }
 
     const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
-    const rows = this.db.prepare(
-      `${SYMBOL_SELECT}${clause} ORDER BY LENGTH(s.name), s.name, f.path LIMIT ?`,
-    ).all(...params, options.limit) as Record<string, unknown>[]
-    return rows.map(toSymbolHit)
+    return { clause, params }
   }
 
   edgesToSymbol(symbolId: number): EdgeRow[] {
