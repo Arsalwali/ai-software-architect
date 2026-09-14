@@ -88,16 +88,30 @@ describe('searchCode', () => {
     expect(searchCode(store, fixture, { query: 'hel_er', limit: 20 }).hits).toEqual([])
     expect(searchCode(store, fixture, { query: 'h%r', limit: 20 }).hits).toEqual([])
   })
+
+  it('does not double-count a symbol whose declaration line is also a full-text match', () => {
+    // `helper`'s declaration line (src/helper.ts:1) textually contains
+    // "helper" too, so it is both the exact-symbol hit AND a candidate
+    // full-text hit for the same query. Two more lines in
+    // src/services/order.ts match as plain text (the import and the call
+    // site), for 3 distinct path:line locations in total. If `total` were
+    // ever computed as an independent symbol count plus an independent
+    // text count (rather than read off the deduped `hits` themselves), the
+    // declaration line would be counted twice and `total` would come out
+    // as 4 -- claiming a result exists that doesn't. With limit: 10, all 3
+    // real matches fit, so `truncated` must be absent entirely.
+    const { hits, truncated } = searchCode(store, fixture, { query: 'helper', limit: 10 })
+    expect(hits).toHaveLength(3)
+    expect(truncated).toBeUndefined()
+  })
 })
 
 describe('searchCode truncation honesty', () => {
   // 13 distinct files, each exporting a function literally named `dup`, so
-  // a query for `dup` has 13 real symbol matches. With `limit: 2` (and
-  // SCAN_MULTIPLIER === 5 in src/tools/search.ts), symbolLimit is 10 — a
-  // real count SQLite's own `LIMIT` would silently cut at 10 before the
-  // rows ever reach searchCode's in-memory hits array. `truncated.total`
-  // must still say 13, not 10: reporting the count that survived the SQL
-  // LIMIT would be a wrong number smuggled out as an honest one.
+  // a query for `dup` has 13 real symbol matches -- comfortably more than
+  // a small `limit` would once have allowed through the old
+  // limit * SCAN_MULTIPLIER cap on findSymbols' SQL LIMIT.
+  // `truncated.total` must say 13 regardless.
   const DUP_COUNT = 13
   let dupStore: GraphStore
   let dupFixture: string
@@ -113,10 +127,14 @@ describe('searchCode truncation honesty', () => {
     dupStore = GraphStore.open(dbPath)
   })
 
-  it('reports the true total even when SQL LIMIT drops matches before they are counted', () => {
-    // kind: 'function' isolates this to the symbol half (no full-text
-    // contribution), so the total under test is exactly the one at risk.
-    const { hits, truncated } = searchCode(dupStore, dupFixture, { query: 'dup', kind: 'function', limit: 2 })
+  it('reports the true total even when a naive SQL LIMIT would have dropped matches before they were counted', () => {
+    // Deliberately no `kind` filter: this exercises the general path,
+    // including the full-text scan, so a false pass propped up by
+    // bypassing that loop is ruled out. Every one of the 13 declaration
+    // lines is also its own full-text match, and dedup collapses each
+    // pair to one location, so the true total is still exactly 13 -- not
+    // 26, and not whatever a SQL LIMIT would have let through.
+    const { hits, truncated } = searchCode(dupStore, dupFixture, { query: 'dup', limit: 2 })
     expect(hits).toHaveLength(2)
     expect(truncated!.returned).toBe(2)
     expect(truncated!.total).toBe(DUP_COUNT)

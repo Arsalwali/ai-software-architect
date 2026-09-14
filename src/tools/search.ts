@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GraphStore } from '../store/graph-store.js'
-import type { Truncation } from './envelope.js'
+import { truncate, type Truncation } from './envelope.js'
 
 export interface SearchOptions {
   query: string
@@ -26,8 +26,6 @@ const SCORE_EXACT_SYMBOL = 100
 const SCORE_PARTIAL_SYMBOL = 60
 const SCORE_TEXT = 20
 const SNIPPET_MAX = 200
-/** Scan headroom above the caller's limit, so ranking has something to choose from. */
-const SCAN_MULTIPLIER = 5
 
 /**
  * Escapes SQL LIKE metacharacters so a caller-supplied query is matched
@@ -63,37 +61,39 @@ export function searchCode(
     hits.push(hit)
   }
 
-  const symbolLimit = limit * SCAN_MULTIPLIER
   // Escaped once and reused for both findSymbols calls below: pathPrefix
   // flows into a LIKE pattern too, so it carries the same wildcard risk as
   // `contains` and gets the same literal-match treatment.
   const pathPrefix = options.path !== undefined ? escapeLikeWildcards(options.path) : undefined
   const escapedQuery = escapeLikeWildcards(query)
   // The filter set that defines "a symbol matches this search" — shared by
-  // the `contains` findSymbols call below and by countSymbols, so the total
-  // it reports can never disagree with what was actually searched for.
+  // the `contains` findSymbols call below and by countSymbols, so the rows
+  // fetched can never disagree with what was actually counted.
   const symbolFilter = { contains: escapedQuery, kind: options.kind, pathPrefix, lang: options.lang }
 
-  for (const symbol of store.findSymbols({ name: query, kind: options.kind, pathPrefix, lang: options.lang, limit: symbolLimit })) {
+  // The true number of matching symbols, computed BEFORE fetching any rows
+  // so it can size that fetch: passing it as the `findSymbols` LIMIT (for
+  // both calls below) guarantees every matching row reaches `push()`'s
+  // dedup rather than being cut off in SQL first. An exact-name match is
+  // always also a `contains` match, so this one count safely bounds both
+  // queries — the exact-name result set can never be larger than the
+  // `contains` one, so no second count is needed for it.
+  const symbolTotal = store.countSymbols(symbolFilter)
+
+  for (const symbol of store.findSymbols({ name: query, kind: options.kind, pathPrefix, lang: options.lang, limit: symbolTotal })) {
     push(symbolHit(symbol, SCORE_EXACT_SYMBOL))
   }
-  for (const symbol of store.findSymbols({ ...symbolFilter, limit: symbolLimit })) {
+  for (const symbol of store.findSymbols({ ...symbolFilter, limit: symbolTotal })) {
     push(symbolHit(symbol, SCORE_PARTIAL_SYMBOL))
   }
-
-  // The true number of matching symbols, independent of `symbolLimit`. An
-  // exact-name match is always also a `contains` match, so this single
-  // count — not the sum of the two findSymbols calls above — is the right
-  // total: adding them would double-count every exact match.
-  const symbolTotal = store.countSymbols(symbolFilter)
 
   // Full-text half. Only files that were indexed are scanned, so anything
   // skipped at index time — vendored, binary, minified, oversized — stays
   // unreachable here too, and the two views of the repo agree. This path
   // uses plain string methods (startsWith/includes), not SQL LIKE, so it
-  // has no wildcard-escaping concern of its own, and it is never capped
-  // before counting, so its count needs no separate "true total" query.
-  let textHitCount = 0
+  // has no wildcard-escaping concern of its own, and — like the symbol
+  // queries above, now that they are sized to symbolTotal — it is
+  // exhaustive: every matching line reaches `push()`, uncapped.
   if (options.kind === undefined) {
     const needle = query.toLowerCase()
     for (const path of store.allFilePaths()) {
@@ -111,7 +111,6 @@ export function searchCode(
       const lines = source.split('\n')
       for (let i = 0; i < lines.length; i++) {
         if (!lines[i].toLowerCase().includes(needle)) continue
-        textHitCount += 1
         push({
           path,
           line: i + 1,
@@ -124,18 +123,16 @@ export function searchCode(
   }
 
   hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line)
-  // `truncate()` would infer the total from `hits.length`, but `hits` can
-  // already be short of reality: `findSymbols` applies `symbolLimit` in
-  // SQL, so a query with more symbol matches than `symbolLimit` never gets
-  // the excess rows into `hits` to begin with — they're not truncated by
-  // `truncate()`, they're simply never fetched. Reporting `hits.length` as
-  // the total in that case would be a wrong number, not an honest cap, so
-  // the true total is computed independently from `symbolTotal` (a real
-  // COUNT, unconstrained by symbolLimit) plus the full-text count (already
-  // exhaustive, since the file scan has no SQL-style cap of its own).
-  const total = symbolTotal + textHitCount
-  const items = hits.slice(0, limit)
-  const truncated: Truncation | undefined = items.length < total ? { returned: items.length, total } : undefined
+  // `hits` now holds every distinct matching `path:line` location exactly
+  // once: the symbol queries above are sized to `symbolTotal` so nothing is
+  // dropped by SQL before it reaches `push()`'s dedup, and the full-text
+  // scan was always exhaustive. That makes `hits.length` the true total —
+  // including the overlap where a symbol's own declaration line is also a
+  // full-text match, which `seen` already collapses to one entry — so
+  // `truncate()` can derive `total` directly with no separate counting or
+  // arithmetic (summing independently-computed counts would double-count
+  // exactly that overlap).
+  const { items, truncated } = truncate(hits, limit)
   return { hits: items, truncated }
 }
 
