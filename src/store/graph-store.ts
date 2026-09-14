@@ -277,6 +277,21 @@ export class GraphStore {
     this.db.transaction((batch: string[]) => { for (const p of batch) stmt.run(p) })(paths)
   }
 
+  /** Removes a file's import rows without touching the file or its symbols. */
+  deleteImportsForFile(fileId: number): void {
+    this.db.prepare('DELETE FROM imports WHERE file_id = ?').run(fileId)
+  }
+
+  /**
+   * Removes edges ORIGINATING in a file, leaving edges that point at it alone.
+   * Used when a file's outgoing edges must be recomputed but its nodes are
+   * unchanged — re-inserting the nodes instead would null out every inbound
+   * edge from elsewhere via ON DELETE SET NULL.
+   */
+  deleteEdgesFromFile(fileId: number): void {
+    this.db.prepare('DELETE FROM edges WHERE src_file_id = ?').run(fileId)
+  }
+
   allEdgeDetails(): EdgeDetail[] {
     const rows = this.db.prepare(`
       SELECT sf.path AS src_path, ss.name AS src_symbol_name,
