@@ -65,6 +65,7 @@ program
       console.log(`Index:   ${dbPath}`)
       console.log(`Files:   ${store.getMeta('files_indexed') ?? '0'}`)
       console.log(`Skipped: ${store.getMeta('files_skipped') ?? '0'}`)
+      printSkipBreakdown(store.getMeta('files_skipped_by_reason'))
       console.log(`Edges:   ${store.edgeCount()}`)
       console.log(`Built:   ${indexedAt ? new Date(Number(indexedAt)).toISOString() : 'unknown'}`)
 
@@ -83,4 +84,34 @@ program
     }
   })
 
-await program.parseAsync(process.argv)
+/**
+ * Prints a few lines of "skipped 12 as vendored, 3 as binary" so a user can
+ * ask why a file is missing from the graph, not just that some files were
+ * skipped. Kept to the meta blob written by the pipeline; a dedicated
+ * `skipped` table with per-path detail belongs to a later plan.
+ */
+function printSkipBreakdown(raw: string | undefined): void {
+  if (!raw) return
+  let counts: Record<string, number>
+  try {
+    counts = JSON.parse(raw) as Record<string, number>
+  } catch {
+    return
+  }
+  const entries = Object.entries(counts).filter(([, count]) => count > 0)
+  if (entries.length === 0) return
+  entries.sort(([, a], [, b]) => b - a)
+  const summary = entries.map(([reason, count]) => `${count} ${reason}`).join(', ')
+  console.log(`         (${summary})`)
+}
+
+try {
+  await program.parseAsync(process.argv)
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error)
+  process.stderr.write(`Error: ${message}\n`)
+  if (process.env.ARCH_DEBUG && error instanceof Error && error.stack) {
+    process.stderr.write(`${error.stack}\n`)
+  }
+  process.exitCode = 1
+}

@@ -87,7 +87,11 @@ function walkCandidates(repoRoot: string): string[] {
 
   const visit = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name.startsWith('.') && entry.name !== '.gitignore') continue
+      // Dotfiles and dot-directories are real candidates, not noise: source
+      // lives in .storybook/, .github/scripts/, .config/, etc. The only
+      // dot-entry that must never be walked into is .git itself, and that is
+      // already covered by the VENDORED set below (not by a name-prefix check
+      // here, which used to drop everything dotted, .gitignore included).
       const absolute = join(dir, entry.name)
       const rel = relative(repoRoot, absolute)
       if (entry.isDirectory()) {
@@ -99,7 +103,7 @@ function walkCandidates(repoRoot: string): string[] {
           continue
         }
         visit(absolute)
-      } else if ((entry.isFile() || entry.isSymbolicLink()) && entry.name !== '.gitignore') {
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
         // Symlinks are included as candidates so they can't vanish without a
         // diagnostic. statSync above resolves what they point at: a real
         // file is indexed normally, a directory hits not-a-file, and a

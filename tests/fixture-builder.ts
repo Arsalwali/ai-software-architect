@@ -31,6 +31,11 @@ const service = new OrderService();
 service.place(2);
 `,
   'README.md': '# fixture\n',
+  // Dotfiles and dot-directories are real source, not noise -- regression
+  // fixtures for the walkCandidates bug that used to drop every entry
+  // starting with '.' before it could become a files/skipped candidate.
+  '.eslintrc.js': 'module.exports = {\n  root: true,\n};\n',
+  '.config/settings.ts': 'export const settings = {\n  debug: false,\n};\n',
   'node_modules/pkg/index.js': 'module.exports = {};\n',
   'bundle.min.js': '!function(){var a=1;}();\n',
   // Unknown extension + a NUL byte: exercises the binary sniff. Must stay

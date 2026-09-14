@@ -37,14 +37,14 @@ describe('resolveImport', () => {
 
   it('leaves bare package specifiers unresolved', () => {
     expect(resolveImport('src/index.ts', 'react', KNOWN))
-      .toEqual({ path: null, confidence: 'ambiguous' })
+      .toEqual({ path: null, confidence: 'unresolved' })
     expect(resolveImport('src/index.ts', 'node:fs', KNOWN))
-      .toEqual({ path: null, confidence: 'ambiguous' })
+      .toEqual({ path: null, confidence: 'unresolved' })
   })
 
   it('leaves a relative specifier pointing nowhere unresolved', () => {
     expect(resolveImport('src/index.ts', './missing', KNOWN))
-      .toEqual({ path: null, confidence: 'ambiguous' })
+      .toEqual({ path: null, confidence: 'unresolved' })
   })
 
   it('never resolves outside the set of indexed files', () => {

@@ -120,6 +120,14 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     store.setMeta('indexed_at', String(Date.now()))
     store.setMeta('files_indexed', String(files.length))
     store.setMeta('files_skipped', String(skipped.length))
+    // Every skip already carries a specific reason (discover.ts classifies
+    // all six); persist the breakdown too so a user can ask *why* a file is
+    // missing from the graph, not just that some files were skipped.
+    const skippedByReason: Partial<Record<string, number>> = {}
+    for (const entry of skipped) {
+      skippedByReason[entry.reason] = (skippedByReason[entry.reason] ?? 0) + 1
+    }
+    store.setMeta('files_skipped_by_reason', JSON.stringify(skippedByReason))
     store.setMeta('repo_root', repoRoot)
     store.setMeta('head_commit', gitHeadCommit(repoRoot) ?? '')
     store.setMeta('index_complete', '1')

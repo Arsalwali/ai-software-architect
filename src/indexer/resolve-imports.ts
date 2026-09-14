@@ -21,12 +21,12 @@ export function resolveImport(
   knownPaths: Set<string>,
 ): ResolvedImport {
   if (!specifier.startsWith('.')) {
-    return { path: null, confidence: 'ambiguous' }
+    return { path: null, confidence: 'unresolved' }
   }
 
   const base = normalize(join(dirname(fromPath), specifier)).replace(/\\/g, '/')
   if (base.startsWith('..')) {
-    return { path: null, confidence: 'ambiguous' }
+    return { path: null, confidence: 'unresolved' }
   }
 
   for (const candidate of candidatesFor(base)) {
@@ -34,7 +34,7 @@ export function resolveImport(
       return { path: candidate, confidence: 'resolved' }
     }
   }
-  return { path: null, confidence: 'ambiguous' }
+  return { path: null, confidence: 'unresolved' }
 }
 
 function* candidatesFor(base: string): Generator<string> {

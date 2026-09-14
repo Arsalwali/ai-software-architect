@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { RepoParser } from '../parser/parser.js'
+import { languageForPath } from '../parser/languages.js'
 import type { ParsedFile } from '../types.js'
 
 interface WorkerData {
@@ -26,7 +27,18 @@ function parseOne(parser: RepoParser, repoRoot: string, path: string): ParsedFil
   } catch (error) {
     return {
       path,
-      lang: null,
+      // A read failure tells us nothing about the file's actual language, so
+      // don't stamp it null -- null is the spec's dedicated "unknown
+      // language" signal (e.g. README.md), and conflating the two makes an
+      // unreadable src/foo.ts indistinguishable from a genuinely
+      // language-less file. Derive it from the extension instead; still null
+      // for genuinely unknown extensions, which is correct there.
+      lang: languageForPath(path)?.id ?? null,
+      // contentHash stays '' here: hashing requires the content we just
+      // failed to read, and '' is already a safe "no content" sentinel
+      // elsewhere in this record (empty symbols/imports/callSites). Deriving
+      // a hash from just the path would be misleading, implying content that
+      // was never actually read.
       contentHash: '',
       symbols: [],
       imports: [],

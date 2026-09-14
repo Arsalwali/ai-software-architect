@@ -23,7 +23,7 @@ function commit(repoRoot: string, relativePath: string, content: string): void {
 describe('arch CLI', () => {
   it('indexes a repository and reports counts', () => {
     const output = run(['index', FIXTURE])
-    expect(output).toMatch(/Indexed 5 files/)
+    expect(output).toMatch(/Indexed 7 files/)
     expect(output).toMatch(/symbols/)
     expect(output).toMatch(/edges/)
   })
@@ -31,7 +31,7 @@ describe('arch CLI', () => {
   it('reports status for an indexed repository', () => {
     run(['index', FIXTURE])
     const output = run(['status', FIXTURE])
-    expect(output).toMatch(/Files:\s+5/)
+    expect(output).toMatch(/Files:\s+7/)
     expect(output).toMatch(/Index:/)
   })
 
@@ -68,5 +68,30 @@ describe('arch CLI', () => {
     store.close()
     const output = run(['status', incompleteFixture])
     expect(output).toMatch(/INCOMPLETE/)
+  })
+
+  it('exits non-zero with a readable message instead of a raw stack trace', () => {
+    // GraphStore.open composes a specific, actionable message for a
+    // schema-version mismatch. Before Fix 5 the CLI had no top-level error
+    // handling, so this surfaced as an uncaught-exception stack trace with
+    // the actual message buried several lines down.
+    const mismatchFixture = buildFixture({ git: true })
+    run(['index', mismatchFixture])
+    const dbPath = indexPathFor(mismatchFixture)
+    const store = GraphStore.open(dbPath)
+    store.setMeta('schema_version', '999')
+    store.close()
+
+    let error: (Error & { status?: number | null; stderr?: string }) | undefined
+    try {
+      run(['status', mismatchFixture])
+    } catch (e) {
+      error = e as typeof error
+    }
+
+    expect(error).toBeDefined()
+    expect(error!.status).not.toBe(0)
+    expect(error!.stderr).toMatch(/schema version/i)
+    expect(error!.stderr).toMatch(/arch index --force/)
   })
 })

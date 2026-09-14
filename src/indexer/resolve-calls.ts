@@ -18,7 +18,13 @@ export interface ResolveCallsArgs {
  *
  * One candidate  -> `heuristic`
  * Several        -> `ambiguous`, fanned out to all of them
- * None           -> an unresolved edge carrying only the name
+ * None           -> `unresolved`, an edge carrying only the name
+ *
+ * `unresolved` and `ambiguous` are deliberately distinct tiers: an
+ * unresolved call (console.log, a third-party function, a builtin) carries
+ * no uncertainty at all, whereas an ambiguous one genuinely could be several
+ * things. Conflating them would manufacture false uncertainty at the exact
+ * ratio real ambiguity is buried in.
  *
  * Ambiguous matches are stored, never dropped. Under-reporting on "what could
  * break?" is the failure that destroys trust; over-reporting with a label does not.
@@ -57,7 +63,7 @@ export function resolveCallsForFile(args: ResolveCallsArgs): EdgeInput[] {
         dstSymbolId: null,
         dstName: site.name,
         kind: site.kind,
-        confidence: 'ambiguous',
+        confidence: 'unresolved',
         line: site.line,
       })
       continue

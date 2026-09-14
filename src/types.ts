@@ -1,4 +1,12 @@
-export type Confidence = 'exact' | 'resolved' | 'heuristic' | 'ambiguous'
+/**
+ * Descending confidence order. `unresolved` and `ambiguous` are distinct
+ * outcomes (spec §6.2/§6.3) and must never be conflated:
+ *   - unresolved: no candidate matched at all — external, builtin, or
+ *     third-party. There is no uncertainty here, just an absent target.
+ *   - ambiguous: several candidates matched; all are stored, fanned out,
+ *     rather than guessing one. This is the genuine "we're not sure" signal.
+ */
+export type Confidence = 'exact' | 'resolved' | 'heuristic' | 'unresolved' | 'ambiguous'
 
 export type EdgeKind = 'calls' | 'extends' | 'implements' | 'instantiates' | 'references'
 

@@ -6,6 +6,8 @@ import { indexPathFor } from '../src/repo/repo-source.js'
 import { buildFixture } from './fixture-builder.js'
 
 const EXPECTED_FILES = [
+  '.config/settings.ts',
+  '.eslintrc.js',
   'README.md',
   'src/helper.ts',
   'src/index.ts',
@@ -83,6 +85,17 @@ describe('discoverFiles (git ls-files)', () => {
     expect(reasons.has('vendored')).toBe(true)
     expect(reasons.has('minified')).toBe(true)
     expect(reasons.has('binary')).toBe(true)
+  })
+})
+
+describe('discoverFiles (cross-branch parity)', () => {
+  it('the git branch and the filesystem-walk branch agree on exactly the same files', () => {
+    // The single highest-value assertion for this class of bug: init'ing
+    // git must not change what gets indexed. Comparing both branches
+    // directly (rather than each separately against a fixed EXPECTED_FILES)
+    // is what actually catches a regression where both branches drift the
+    // same way, or where EXPECTED_FILES itself is stale.
+    expect(discoverFiles(gitRoot).files.sort()).toEqual(discoverFiles(plainRoot).files.sort())
   })
 })
 

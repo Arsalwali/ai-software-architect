@@ -66,7 +66,7 @@ describe('resolveCallsForFile', () => {
     })
     expect(edges).toHaveLength(1)
     expect(edges[0]).toMatchObject({
-      dstSymbolId: null, dstFileId: null, dstName: 'console', confidence: 'ambiguous',
+      dstSymbolId: null, dstFileId: null, dstName: 'console', confidence: 'unresolved',
     })
   })
 

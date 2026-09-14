@@ -16,6 +16,14 @@ export interface ParseAllArgs {
   paths: string[]
   concurrency?: number
   onBatch?: (done: number, total: number) => void
+  /**
+   * Overrides the compiled worker script. Only meant for tests: a genuine
+   * worker-thread crash can't be induced through a normal source file (every
+   * per-file failure is caught inside parse-worker.ts and returned as an
+   * error record, never thrown), so tests point this at a small script that
+   * crashes on purpose to exercise runChunk's reject paths.
+   */
+  workerPath?: string
 }
 
 /**
@@ -24,29 +32,45 @@ export interface ParseAllArgs {
  * normalized ParsedFile records are, which is what bounds memory.
  */
 export async function parseAll(args: ParseAllArgs): Promise<ParsedFile[]> {
-  const { repoRoot, paths, onBatch } = args
+  const { repoRoot, paths, onBatch, workerPath = WORKER_PATH } = args
   if (paths.length === 0) return []
 
-  const workers = Math.max(1, Math.min(args.concurrency ?? availableParallelism() - 1, paths.length))
-  const chunks = chunkInto(paths, workers)
+  const workerCount = Math.max(1, Math.min(args.concurrency ?? availableParallelism() - 1, paths.length))
+  const chunks = chunkInto(paths, workerCount)
 
+  // Every spawned Worker handle is retained so that, if any chunk rejects,
+  // its still-running siblings can be terminated rather than left orphaned.
+  // Without this, a caught rejection in a long-lived caller (e.g. a future
+  // MCP server) leaves worker threads burning CPU indefinitely across retries.
+  const workers: Worker[] = []
   let done = 0
-  const settled = await Promise.all(
-    chunks.map(chunk =>
-      runChunk(repoRoot, chunk).then(result => {
-        done += chunk.length
-        onBatch?.(done, paths.length)
-        return result
-      }),
-    ),
-  )
 
-  return settled.flat()
+  const runs = chunks.map(chunk => {
+    const { worker, result } = runChunk(repoRoot, chunk, workerPath)
+    workers.push(worker)
+    return result.then(parsed => {
+      done += chunk.length
+      onBatch?.(done, paths.length)
+      return parsed
+    })
+  })
+
+  try {
+    const settled = await Promise.all(runs)
+    return settled.flat()
+  } catch (error) {
+    for (const worker of workers) void worker.terminate()
+    throw error
+  }
 }
 
-function runChunk(repoRoot: string, paths: string[]): Promise<ParsedFile[]> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(WORKER_PATH, { workerData: { repoRoot, paths } })
+function runChunk(
+  repoRoot: string,
+  paths: string[],
+  workerPath: string,
+): { worker: Worker; result: Promise<ParsedFile[]> } {
+  const worker = new Worker(workerPath, { workerData: { repoRoot, paths } })
+  const result = new Promise<ParsedFile[]>((resolve, reject) => {
     let received: ParsedFile[] | null = null
 
     worker.on('message', (message: ParsedFile[]) => { received = message })
@@ -56,6 +80,7 @@ function runChunk(repoRoot: string, paths: string[]): Promise<ParsedFile[]> {
       else reject(new Error(`parse worker exited with code ${code} before reporting`))
     })
   })
+  return { worker, result }
 }
 
 /** Contiguous chunks, so results concatenate back into input order. */

@@ -22,7 +22,7 @@ beforeAll(async () => {
 
 describe('cold index', () => {
   it('indexes every discovered file', () => {
-    expect(report.filesIndexed).toBe(5)
+    expect(report.filesIndexed).toBe(7)
     expect(store.allFilePaths()).toContain('src/services/order.ts')
   })
 
@@ -62,10 +62,29 @@ describe('cold index', () => {
     expect(all.some(e => e.dstName === 'log' && e.dstSymbolId === null)).toBe(true)
   })
 
+  it('tags an unresolved external call and a heuristic local match with distinct tiers', () => {
+    // Pins the exact bug this branch fixes: a zero-candidate call (console.log,
+    // an external/builtin with no local symbol match at all) must carry
+    // 'unresolved', never 'ambiguous' -- 'ambiguous' means several candidates
+    // matched, which is a completely different, genuinely uncertain outcome.
+    // Nothing asserted this distinction before, which is how it survived ten
+    // reviews: `notify()`'s console.log call and `OrderService.place`'s call
+    // to `helper` differ only in which tier they land on.
+    const all = store.allEdges()
+    const logCall = all.find(e => e.dstName === 'log' && e.dstSymbolId === null)!
+    expect(logCall).toBeDefined()
+    expect(logCall.confidence).toBe('unresolved')
+
+    const helperId = store.fileIdByPath('src/helper.ts')!
+    const helperCall = store.edgesInto(helperId).find(e => e.dstName === 'helper')!
+    expect(helperCall).toBeDefined()
+    expect(helperCall.confidence).toBe('heuristic')
+  })
+
   it('writes head_commit only after a successful run, and clears it when a later run fails partway', async () => {
     // Half one: a successful run wrote the real head commit, not just any value.
     expect(store.getMeta('indexed_at')).toBeDefined()
-    expect(store.getMeta('files_indexed')).toBe('5')
+    expect(store.getMeta('files_indexed')).toBe('7')
     const expectedHead = gitHeadCommit(fixture)
     expect(expectedHead).toBeTruthy()
     expect(store.getMeta('head_commit')).toBe(expectedHead)
