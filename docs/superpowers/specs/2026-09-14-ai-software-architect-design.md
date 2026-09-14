@@ -51,6 +51,7 @@ about structure.
 | Implementation | TypeScript / Node | Matches maintainer's stack; MCP SDK is TS-first; future TS resolver is native |
 | Storage | SQLite at `~/.arch/repos/<path-hash>/index.db` | No service to run; central location keeps repos clean and treats clones identically |
 | Repo access | Local-first | A GitHub URL is cloned to cache, then indexed as a local path |
+| Grammars | `@vscode/tree-sitter-wasm` + `web-tree-sitter` | 17 prebuilt, ABI-current grammars with no build step. `tree-sitter-wasms` is ABI-incompatible with current web-tree-sitter and must not be substituted |
 
 ### 4.1 The central tradeoff
 
@@ -149,13 +150,20 @@ files      (id, path, lang, content_hash, loc, last_commit, error_count, indexed
 symbols    (id, file_id, name, kind, start_line, end_line,
             exported, signature, parent_symbol_id)
 imports    (id, file_id, raw_specifier, resolved_file_id, kind, confidence, line)
-edges      (id, src_symbol_id, dst_symbol_id, dst_name, kind, confidence, line)
+edges      (id, src_file_id, src_symbol_id, dst_file_id, dst_symbol_id,
+            dst_name, kind, confidence, line)
 summaries  (module_path, tree_hash, summary, model, created_at)
 meta       (key, value)   -- schema_version, head_commit, indexed_at, counts
 ```
 
 Indexes on `symbols(name)`, `symbols(file_id)`, `edges(src_symbol_id)`,
-`edges(dst_symbol_id)`, `imports(resolved_file_id)`, `files(path)`.
+`edges(dst_symbol_id)`, `edges(src_file_id)`, `edges(dst_file_id)`,
+`imports(resolved_file_id)`, `files(path)`.
+
+`src_file_id` is NOT NULL; `src_symbol_id`, `dst_file_id` and `dst_symbol_id`
+are all nullable. A call at file top level has no enclosing symbol, so a
+non-null `src_symbol_id` could not represent it, and file- and module-level
+aggregation should join files directly rather than hopping through `symbols`.
 
 `edges.kind` is one of `calls | extends | implements | instantiates | references`.
 
@@ -420,3 +428,7 @@ Each milestone is independently verifiable.
   layer.
 - Multi-repository indexing and cross-repository edges.
 - Cross-language edge detection (for example, the React Native JS↔native bridge).
+- Swift and Kotlin grammars. `@vscode/tree-sitter-wasm` covers TypeScript, TSX,
+  JavaScript, Python, Go, Java, Ruby, Rust, C#, C++, PHP, Bash, CSS and
+  PowerShell, but not Swift or Kotlin — those require grammars compiled
+  separately before React Native native-side indexing is possible.
