@@ -61,6 +61,17 @@ export interface EdgeRow {
   line: number
 }
 
+export interface EdgeDetail {
+  srcPath: string
+  srcSymbolName: string | null
+  dstPath: string | null
+  dstSymbolName: string | null
+  dstName: string
+  kind: EdgeKind
+  confidence: Confidence
+  line: number
+}
+
 /** The only module in the project that touches SQLite. */
 export class GraphStore {
   private constructor(private readonly db: Database.Database) {}
@@ -227,6 +238,66 @@ export class GraphStore {
 
   allEdges(): EdgeRow[] {
     return this.toEdgeRows(this.db.prepare(EDGE_SELECT).all())
+  }
+
+  contentHashByPath(): Map<string, string> {
+    const rows = this.db.prepare('SELECT path, content_hash FROM files').all() as
+      Array<{ path: string; content_hash: string }>
+    return new Map(rows.map(r => [r.path, r.content_hash]))
+  }
+
+  fileIdsByPath(): Map<string, number> {
+    const rows = this.db.prepare('SELECT id, path FROM files').all() as
+      Array<{ id: number; path: string }>
+    return new Map(rows.map(r => [r.path, r.id]))
+  }
+
+  pathsById(): Map<number, string> {
+    const rows = this.db.prepare('SELECT id, path FROM files').all() as
+      Array<{ id: number; path: string }>
+    return new Map(rows.map(r => [r.id, r.path]))
+  }
+
+  /** Files whose RESOLVED imports point at this file. Unresolved imports never widen it. */
+  filesImporting(fileId: number): number[] {
+    const rows = this.db.prepare(
+      'SELECT DISTINCT file_id FROM imports WHERE resolved_file_id = ? ORDER BY file_id',
+    ).all(fileId) as Array<{ file_id: number }>
+    return rows.map(r => r.file_id)
+  }
+
+  /**
+   * Removes files by path. `symbols`, `imports` and outgoing `edges` cascade
+   * away; edges pointing AT the removed file survive with null dst columns
+   * (ON DELETE SET NULL), which is what keeps a reference visible after its
+   * target disappears rather than silently dropping it.
+   */
+  deleteFilesByPath(paths: string[]): void {
+    const stmt = this.db.prepare('DELETE FROM files WHERE path = ?')
+    this.db.transaction((batch: string[]) => { for (const p of batch) stmt.run(p) })(paths)
+  }
+
+  allEdgeDetails(): EdgeDetail[] {
+    const rows = this.db.prepare(`
+      SELECT sf.path AS src_path, ss.name AS src_symbol_name,
+             df.path AS dst_path, ds.name AS dst_symbol_name,
+             e.dst_name, e.kind, e.confidence, e.line
+      FROM edges e
+      JOIN files sf ON sf.id = e.src_file_id
+      LEFT JOIN symbols ss ON ss.id = e.src_symbol_id
+      LEFT JOIN files df ON df.id = e.dst_file_id
+      LEFT JOIN symbols ds ON ds.id = e.dst_symbol_id
+    `).all() as Record<string, unknown>[]
+    return rows.map(r => ({
+      srcPath: r.src_path as string,
+      srcSymbolName: (r.src_symbol_name as string | null) ?? null,
+      dstPath: (r.dst_path as string | null) ?? null,
+      dstSymbolName: (r.dst_symbol_name as string | null) ?? null,
+      dstName: r.dst_name as string,
+      kind: r.kind as EdgeKind,
+      confidence: r.confidence as Confidence,
+      line: r.line as number,
+    }))
   }
 
   clear(): void {
