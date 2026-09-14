@@ -180,7 +180,21 @@ synchronization bug at negligible query cost.
 | `exact` | A real type resolver verified this binding. Reserved; nothing emits it yet. |
 | `resolved` | An import specifier deterministically resolved to a file on disk. |
 | `heuristic` | A called name matched exactly one symbol reachable from the file's imports. |
+| `unresolved` | No candidate matched at all — an external, builtin or third-party target. Carries `dst_name` with a null `dst_symbol_id`. |
 | `ambiguous` | The name matched multiple candidates. **All candidates are stored.** |
+
+`unresolved` and `ambiguous` must never be conflated; that distinction is the point of the
+tier system. `unresolved` means there is nothing to be uncertain *about* — `console.log`
+has no in-repo target and never will. `ambiguous` means the graph genuinely does not know
+which of several real candidates is meant. Collapsing the first into the second
+manufactures uncertainty: measured on a representative repository, unresolved external
+calls outnumbered genuine collisions roughly 100 to 1, so a tool labelling both `ambiguous`
+drowns its own signal and reports a number nobody should trust.
+
+Note for the future `min_confidence` filter (§8): do not treat the declaration order of the
+`Confidence` union as a ranking. Whether `unresolved` sorts above or below `ambiguous` is
+genuinely arguable, and an implicit ordering would silently invert such a filter. Define an
+explicit rank.
 
 Storing ambiguous matches rather than discarding them is a deliberate inversion of the
 obvious instinct. Under-reporting on "what could break?" is the failure mode that
@@ -403,7 +417,17 @@ Layered from there:
 | Incremental reindex, 5–20 changed files | under 1 second |
 | Graph query (`get_dependencies`, `impact_of`) | under 100 ms |
 | `find_cycles`, whole repo | under 2 seconds |
-| Memory ceiling during indexing | bounded by batch size, independent of repo size |
+| Memory ceiling during indexing | **currently O(repo size), not O(batch size)** — see note |
+
+The memory row is an aspiration the implementation does not yet meet, and this spec
+previously overstated it. ASTs are discarded per batch as described, but the normalized
+`ParsedFile` records and the accumulated `EdgeInput` array are held for the whole run, and
+those are the bulk. Measured on a 3,000-file synthetic repository: 876 MB peak RSS, and
+cutting the batch size fiftyfold moved that by 11% — batching batches only the persist
+step. Meeting the stated target requires streaming records through the resolve phases
+instead of materializing them, which is an architectural change, not a patch.
+**Milestone 6 (incremental reindex) must not be built on the assumption that a full index
+fits in memory.**
 
 ## 12. Build order
 
