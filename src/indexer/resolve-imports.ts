@@ -38,8 +38,6 @@ export function resolveImport(
 }
 
 function* candidatesFor(base: string): Generator<string> {
-  yield base
-
   // TypeScript source for an explicit JS specifier: "./helper.js" -> "./helper.ts"
   const jsExtension = /\.(js|jsx|mjs|cjs)$/.exec(base)
   if (jsExtension) {
@@ -47,6 +45,7 @@ function* candidatesFor(base: string): Generator<string> {
     for (const ext of PROBE_EXTENSIONS) yield stem + ext
   }
 
+  yield base
   for (const ext of PROBE_EXTENSIONS) yield base + ext
   for (const basename of INDEX_BASENAMES) yield `${base}/${basename}`
 }

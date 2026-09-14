@@ -3,6 +3,7 @@ import { resolveImport } from '../src/indexer/resolve-imports.js'
 
 const KNOWN = new Set([
   'src/helper.ts',
+  'src/helper.js',
   'src/services/order.ts',
   'src/services/notify.ts',
   'src/widgets/index.ts',
@@ -27,6 +28,11 @@ describe('resolveImport', () => {
 
   it('resolves an explicit .js specifier to the .ts source', () => {
     expect(resolveImport('src/index.ts', './helper.js', KNOWN).path).toBe('src/helper.ts')
+  })
+
+  it('prefers the .ts source even when both .js and .ts are indexed', () => {
+    expect(resolveImport('src/index.ts', './helper.js', KNOWN))
+      .toEqual({ path: 'src/helper.ts', confidence: 'resolved' })
   })
 
   it('leaves bare package specifiers unresolved', () => {
