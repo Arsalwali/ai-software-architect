@@ -1940,6 +1940,8 @@ git commit -m "feat: get_repo_overview"
 - Consumes: `GraphStore.findSymbols`, `GraphStore.allFilePaths`, `truncate`.
 - Produces: `interface SearchHit`, `interface SearchOptions`, `searchCode(store: GraphStore, repoRoot: string, options: SearchOptions): { hits: SearchHit[]; truncated?: Truncation }`.
 
+> **Correction applied during execution.** The reference code below passes `limit * SCAN_MULTIPLIER` into `findSymbols`' SQL `LIMIT`, which silently drops matching rows before they reach the `hits` array — so `truncate()` reports a `total` that is already short. In a repository with 150 symbols named `handler`, a search with `limit: 10` would report a total of 50. That is a false number, and it breaks the one invariant the envelope exists to enforce. The shipped code adds a `countSymbols` sharing a single WHERE-clause builder with `findSymbols`, so the reported total is the real match count regardless of how many rows were returned. The shipped code also threads `options.lang` into `findSymbols`, which the reference code applied only to the full-text half — leaving a `lang` filter that silently did not restrict symbol hits.
+>
 > **No external binary.** The spec sketches ripgrep for the full-text half. This uses a Node scan over the already-indexed file list instead, because the MCP server must work wherever the CLI runs and a missing `rg` would turn a core tool into a silent half-tool. The file list is already bounded — vendored trees, binaries and anything over 1 MB were excluded at index time — so the scan reads only real source. If this ever becomes the bottleneck, shelling out to ripgrep *when present* is a safe later optimization; starting there would not have been.
 
 - [ ] **Step 1: Write the failing test**
@@ -2065,8 +2067,6 @@ const SCORE_EXACT_SYMBOL = 100
 const SCORE_PARTIAL_SYMBOL = 60
 const SCORE_TEXT = 20
 const SNIPPET_MAX = 200
-/** Scan headroom above the caller's limit, so ranking has something to choose from. */
-const SCAN_MULTIPLIER = 5
 
 export function searchCode(
   store: GraphStore,
@@ -2086,7 +2086,11 @@ export function searchCode(
     hits.push(hit)
   }
 
-  const symbolLimit = limit * SCAN_MULTIPLIER
+  // Size the symbol queries by the REAL match count, not by a multiple of the
+  // caller's limit. A SQL LIMIT here would drop rows before they reach the
+  // `seen` dedup, and `truncate` would then report a total that is already
+  // short. Let every match land in `hits` and let the dedup produce the total.
+  const symbolLimit = store.countSymbols({ contains: query, kind: options.kind, lang: options.lang, pathPrefix: options.path })
 
   for (const symbol of store.findSymbols({ name: query, kind: options.kind, pathPrefix: options.path, limit: symbolLimit })) {
     push(symbolHit(symbol, SCORE_EXACT_SYMBOL))
