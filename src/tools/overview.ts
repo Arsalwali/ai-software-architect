@@ -1,4 +1,5 @@
 import type { GraphStore } from '../store/graph-store.js'
+import { entryPointsFromPackageJson, isEntryPoint } from './entry-points.js'
 
 export interface RepoOverview {
   repoRoot: string | null
@@ -16,12 +17,16 @@ export interface RepoOverview {
   filesWithParseErrors: number
 }
 
-const ENTRY_BASENAMES = new Set([
-  'index.ts', 'index.tsx', 'index.js', 'index.mjs',
-  'main.ts', 'main.js', 'server.ts', 'server.js', 'app.ts', 'app.js', 'cli.ts', 'cli.js',
-])
-
-export function buildOverview(store: GraphStore): RepoOverview {
+/**
+ * `repoRoot` is optional, the same seam `impactOf` already uses: when
+ * absent (or when `package.json` is missing/unparsable), entry-point
+ * detection degrades to the conventional-basename check alone rather than
+ * throwing. Passing it lets `entryPoints` agree with `impact_of`'s
+ * `exportedFromEntryPoint` about package.json-declared entries (`main`,
+ * `module`, `bin`, `exports`) instead of only recognising conventional
+ * basenames — the two used to hold separately-drifted copies of this logic.
+ */
+export function buildOverview(store: GraphStore, repoRoot?: string): RepoOverview {
   const totals = store.totals()
   const edgeConfidence = store.confidenceBreakdown()
 
@@ -38,6 +43,7 @@ export function buildOverview(store: GraphStore): RepoOverview {
   const moduleFiles = new Map<string, { files: number; symbols: number }>()
   let filesWithParseErrors = 0
   const entryPoints: string[] = []
+  const packageEntryPoints = repoRoot !== undefined ? entryPointsFromPackageJson(repoRoot) : new Set<string>()
 
   for (const path of paths) {
     const top = path.includes('/') ? path.slice(0, path.indexOf('/')) : '.'
@@ -50,8 +56,7 @@ export function buildOverview(store: GraphStore): RepoOverview {
     const row = store.fileRow(path)
     if (row && row.errorCount > 0) filesWithParseErrors += 1
 
-    const basename = path.slice(path.lastIndexOf('/') + 1)
-    if (ENTRY_BASENAMES.has(basename)) entryPoints.push(path)
+    if (isEntryPoint(path, packageEntryPoints)) entryPoints.push(path)
   }
 
   let byReason: Record<string, number> = {}

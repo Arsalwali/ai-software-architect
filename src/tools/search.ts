@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { GraphStore } from '../store/graph-store.js'
-import { truncate, type Truncation } from './envelope.js'
+import { truncate, escapeLikeWildcards, type Truncation } from './envelope.js'
 
 export interface SearchOptions {
   query: string
@@ -26,22 +26,6 @@ const SCORE_EXACT_SYMBOL = 100
 const SCORE_PARTIAL_SYMBOL = 60
 const SCORE_TEXT = 20
 const SNIPPET_MAX = 200
-
-/**
- * Escapes SQL LIKE metacharacters so a caller-supplied query is matched
- * literally by `GraphStore.findSymbols`'s `contains`/`pathPrefix` filters,
- * which wrap the value into a `LIKE '%...%'` pattern without escaping it.
- * Without this, a query containing `_` (matches any single character) or
- * `%` (matches any run of characters) would be silently reinterpreted as a
- * wildcard — e.g. searching for `foo_bar` would also match `fooXbar`, and
- * `50%` would match far more than the literal string "50%". `\` is escaped
- * first (and is itself the escape character) so a query that already
- * contains a backslash cannot smuggle a live wildcard back in. Paired with
- * the `ESCAPE '\'` clause added to those LIKE expressions in graph-store.ts.
- */
-function escapeLikeWildcards(value: string): string {
-  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`)
-}
 
 export function searchCode(
   store: GraphStore,

@@ -225,7 +225,14 @@ function report(
     filesSkipped: changes.skipped.length,
     symbols: [...store.symbolsByFile().values()].reduce((n, rows) => n + rows.length, 0),
     edges: store.edgeCount(),
-    parseErrors: 0,
+    // Read back from the `files` table rather than tallied only over this
+    // run's re-parsed subset (`toParse`/`reparsedFiles`): a SUM over the
+    // whole table reflects the WHOLE repository's index, including files a
+    // previous run indexed with errors that this run's dilation never
+    // touched. Spec §9 requires parse errors be reported in aggregate; a
+    // per-run tally would silently under-report whenever the erroring file
+    // itself was untouched by the current incremental pass.
+    parseErrors: store.totalParseErrors(),
     durationMs: Date.now() - startedAt,
     changedFiles: changes.changed.length,
     deletedFiles: changes.deleted.length,

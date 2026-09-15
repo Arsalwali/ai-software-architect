@@ -32,6 +32,16 @@ export interface DependencyResult {
   target: ResolvedTarget
   direction: Direction
   nodes: DependencyNode[]
+  /** The `depth` actually used for this traversal, echoed back. */
+  depth: number
+  /**
+   * True when the BFS still had a non-empty frontier when the depth budget
+   * ran out — i.e. more dependencies exist beyond `depth` that this result
+   * does not include. `false` means the traversal reached everything
+   * reachable on its own, not merely that nothing was cut off by a smaller
+   * budget than the caller might have wanted.
+   */
+  depthLimited: boolean
   truncated?: Truncation
 }
 
@@ -63,17 +73,21 @@ export function resolveTarget(store: GraphStore, target: string): ResolvedTarget
 
 export function getDependencies(store: GraphStore, options: DependencyOptions): DependencyResult {
   const target = resolveTarget(store, options.target)
-  if (target.kind === 'unknown') return { target, direction: options.direction, nodes: [] }
+  if (target.kind === 'unknown') {
+    return { target, direction: options.direction, nodes: [], depth: options.depth, depthLimited: false }
+  }
 
-  const nodes = target.kind === 'symbol'
+  const { nodes, depthLimited } = target.kind === 'symbol'
     ? symbolLevel(store, target, options)
     : fileLevel(store, target, options)
 
   const { items, truncated } = truncate(nodes, options.limit)
-  return { target, direction: options.direction, nodes: items, truncated }
+  return { target, direction: options.direction, nodes: items, depth: options.depth, depthLimited, truncated }
 }
 
-function fileLevel(store: GraphStore, target: ResolvedTarget, options: DependencyOptions): DependencyNode[] {
+function fileLevel(
+  store: GraphStore, target: ResolvedTarget, options: DependencyOptions,
+): { nodes: DependencyNode[]; depthLimited: boolean } {
   const pathsById = store.pathsById()
   const idsByPath = store.fileIdsByPath()
   // File-level nodes are always emitted with confidence 'resolved' (import
@@ -120,10 +134,18 @@ function fileLevel(store: GraphStore, target: ResolvedTarget, options: Dependenc
     frontier = next
   }
 
-  return out
+  // The loop above only exits with a non-empty `frontier` when it ran out
+  // of depth budget while nodes were still waiting to be explored (the
+  // other exit condition, `frontier.length === 0`, means the BFS finished
+  // on its own). That makes this the signal for Fix 4: depth truncation
+  // used to be silent here, reporting the same shape of result at
+  // maxDepth 1 as at maxDepth 10 with no way to tell them apart.
+  return { nodes: out, depthLimited: frontier.length > 0 }
 }
 
-function symbolLevel(store: GraphStore, target: ResolvedTarget, options: DependencyOptions): DependencyNode[] {
+function symbolLevel(
+  store: GraphStore, target: ResolvedTarget, options: DependencyOptions,
+): { nodes: DependencyNode[]; depthLimited: boolean } {
   // Same reasoning as resolveTarget above: size by the true count so a
   // symbol name with many definitions never has its starting set silently
   // narrowed before the BFS even runs.
@@ -143,7 +165,7 @@ export function traverseSymbols(
   maxDepth: number,
   kind?: EdgeKind,
   minConfidence?: Confidence,
-): DependencyNode[] {
+): { nodes: DependencyNode[]; depthLimited: boolean } {
   const floor = minConfidence === undefined ? -1 : CONFIDENCE_RANK[minConfidence]
   const pathsById = store.pathsById()
   const seen = new Set<number>(startSymbolIds)
@@ -184,5 +206,5 @@ export function traverseSymbols(
     frontier = next
   }
 
-  return out
+  return { nodes: out, depthLimited: frontier.length > 0 }
 }

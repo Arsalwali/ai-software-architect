@@ -120,8 +120,27 @@ export class GraphStore {
   private constructor(private readonly db: Database.Database) {}
 
   static open(dbPath: string): GraphStore {
-    const db = new Database(dbPath)
-    db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'))
+    let db: Database.Database
+    try {
+      db = new Database(dbPath)
+      db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'))
+    } catch (err) {
+      // A schema-version mismatch (below) is a deliberate, well-formed
+      // refusal with its own actionable message. This catches everything
+      // else that can go wrong opening the file itself -- truncated,
+      // corrupted, or not a SQLite database at all -- which would otherwise
+      // surface as a bare "file is not a database" with no repo name, no
+      // index path, and no indication that "arch index --force" fixes it.
+      // Every MCP tool goes through GraphStore.open, so without this an
+      // affected repository's four tools are all permanently dead ends.
+      // Deliberately does NOT auto-discard and rebuild here (spec §9 would
+      // allow it) -- that's a larger behaviour change left out of scope.
+      const message = err instanceof Error ? err.message : String(err)
+      throw new Error(
+        `Could not open the index at "${dbPath}": ${message}. It may be corrupt or truncated. ` +
+        `Run "arch index --force" to rebuild it.`,
+      )
+    }
 
     const existing = db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version') as
       | { value: string } | undefined
@@ -381,6 +400,19 @@ export class GraphStore {
       GROUP BY f.lang ORDER BY files DESC
     `).all() as Array<{ lang: string | null; files: number; symbols: number }>
     return rows.map(r => ({ lang: r.lang ?? null, files: r.files, symbols: r.symbols }))
+  }
+
+  /**
+   * Sum of `error_count` across every row currently in `files`, reflecting
+   * the whole repository's index rather than only the files touched by the
+   * most recent run. Used by the incremental pipeline to report parse
+   * errors: unlike a running tally kept only over the re-parsed subset,
+   * this stays correct even when the file that had the error wasn't part
+   * of this run's dilation.
+   */
+  totalParseErrors(): number {
+    const row = this.db.prepare('SELECT SUM(error_count) AS n FROM files').get() as { n: number | null }
+    return row.n ?? 0
   }
 
   totals(): { files: number; symbols: number; edges: number; imports: number } {

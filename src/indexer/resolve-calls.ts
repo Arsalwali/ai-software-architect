@@ -35,7 +35,17 @@ export function resolveCallsForFile(args: ResolveCallsArgs): EdgeInput[] {
   const localByName = groupByName(localSymbols)
 
   const importedByName = new Map<string, SymbolRow[]>()
-  for (const fileId of importedFileIds) {
+
+  // Deduplicated here, at the shared chokepoint both the cold and
+  // incremental pipelines funnel through, rather than at either call site:
+  // `importedFileIds` carries one entry PER IMPORT ROW (pipeline.ts and
+  // incremental.ts both `push` per raw import), so an everyday pattern like
+  // `import { helper } from './m'` plus `import type { Opts } from './m'`
+  // puts the same file id in twice. Without this dedup, every exported
+  // symbol of that file enters `importedByName` twice, manufacturing a
+  // `candidates.length === 2` and a false `ambiguous` edge out of what is
+  // really a single, unambiguous candidate.
+  for (const fileId of new Set(importedFileIds)) {
     for (const symbol of exportedByFile.get(fileId) ?? []) {
       const bucket = importedByName.get(symbol.name)
       if (bucket) bucket.push(symbol)

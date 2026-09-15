@@ -32,7 +32,7 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
     inputSchema: { repo: repoArg },
   }, async ({ repo }) => {
     const repoRoot = resolve(repo ?? process.cwd())
-    return toolText(await withIndex(repoRoot, store => buildOverview(store), dbFor(repoRoot)))
+    return toolText(await withIndex(repoRoot, store => buildOverview(store, repoRoot), dbFor(repoRoot)))
   })
 
   server.registerTool('search_code', {
@@ -70,7 +70,9 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
       repo: repoArg,
       target: z.string().min(1).describe('A file path, a directory, or a symbol name.'),
       direction: z.enum(['in', 'out']).default('out'),
-      depth: z.number().int().min(1).max(10).default(2),
+      depth: z.number().int().min(1).max(10).default(2)
+        .describe('How many hops to traverse. Results are limited to this depth; the response\'s ' +
+          '`depthLimited` flag is true when more exists beyond it.'),
       kind: z.enum(['calls', 'extends', 'implements', 'instantiates', 'references'])
         .optional().describe('Restrict to one edge kind. Symbol targets only.'),
       minConfidence: z.enum(['exact', 'resolved', 'heuristic', 'ambiguous', 'unresolved'])
@@ -100,7 +102,9 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
       repo: repoArg,
       symbol: z.string().min(1).describe('The symbol name to analyse.'),
       file: z.string().optional().describe('Disambiguate by restricting to a path prefix.'),
-      maxDepth: z.number().int().min(1).max(10).default(3),
+      maxDepth: z.number().int().min(1).max(10).default(3)
+        .describe('How many hops to traverse. Results are limited to this depth; the response\'s ' +
+          '`depthLimited` flag is true when more exists beyond it.'),
       limit: z.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
     },
   }, async ({ repo, symbol, file, maxDepth, limit }) => {
