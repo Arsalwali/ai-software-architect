@@ -7,6 +7,7 @@ function parsedFile(path: string, overrides: Partial<ParsedFile> = {}): ParsedFi
     path,
     lang: 'typescript',
     contentHash: 'hash-' + path,
+    loc: 0,
     symbols: [],
     imports: [],
     callSites: [],

@@ -34,9 +34,12 @@ export class RepoParser {
 
   parse(path: string, source: string): ParsedFile {
     const contentHash = createHash('sha256').update(source).digest('hex')
+    // A trailing newline does not start a new line, so an n-line file with a
+    // final newline splits into n+1 parts. Counting non-final parts gives n.
+    const loc = source.length === 0 ? 0 : source.split('\n').length - (source.endsWith('\n') ? 1 : 0)
     const def = languageForPath(path)
     if (!def) {
-      return { path, lang: null, contentHash, symbols: [], imports: [], callSites: [], errors: [] }
+      return { path, lang: null, contentHash, loc, symbols: [], imports: [], callSites: [], errors: [] }
     }
 
     const compiled = this.compiled.get(def.id)!
@@ -44,7 +47,7 @@ export class RepoParser {
     const tree = this.parser.parse(source)
     if (!tree) {
       return {
-        path, lang: def.id, contentHash, symbols: [], imports: [], callSites: [],
+        path, lang: def.id, contentHash, loc, symbols: [], imports: [], callSites: [],
         errors: [{ line: 1, message: 'parser returned no tree' }],
       }
     }
@@ -54,6 +57,7 @@ export class RepoParser {
         path,
         lang: def.id,
         contentHash,
+        loc,
         symbols: extractSymbols(compiled.symbols, tree.rootNode),
         imports: extractImports(compiled.imports, tree.rootNode),
         callSites: extractCalls(compiled.calls, tree.rootNode),

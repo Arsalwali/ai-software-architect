@@ -179,7 +179,7 @@ export class GraphStore {
           path: file.path,
           lang: file.lang,
           contentHash: file.contentHash,
-          loc: 0,
+          loc: file.loc,
           errorCount: file.errors.length,
           indexedAt: now,
         })

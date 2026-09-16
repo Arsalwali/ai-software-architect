@@ -53,6 +53,8 @@ export interface ParsedFile {
   path: string
   lang: string | null
   contentHash: string
+  /** Line count of the source. Zero for an empty file. */
+  loc: number
   symbols: SourceSymbol[]
   imports: RawImport[]
   callSites: CallSite[]

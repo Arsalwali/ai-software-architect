@@ -4,7 +4,7 @@ import type { ParsedFile } from '../src/types.js'
 
 function parsedFile(path: string, overrides: Partial<ParsedFile> = {}): ParsedFile {
   return {
-    path, lang: 'typescript', contentHash: 'hash-' + path,
+    path, lang: 'typescript', contentHash: 'hash-' + path, loc: 0,
     symbols: [], imports: [], callSites: [], errors: [], ...overrides,
   }
 }

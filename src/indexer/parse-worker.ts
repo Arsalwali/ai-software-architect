@@ -40,6 +40,7 @@ function parseOne(parser: RepoParser, repoRoot: string, path: string): ParsedFil
       // a hash from just the path would be misleading, implying content that
       // was never actually read.
       contentHash: '',
+      loc: 0,
       symbols: [],
       imports: [],
       callSites: [],
