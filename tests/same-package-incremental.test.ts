@@ -191,3 +191,115 @@ describe('same-package resolution stays correct under incremental indexing', () 
     }
   })
 })
+
+/**
+ * final-fixes.md item 1. The two describes above cover Go and Java, the only
+ * two SAME_PACKAGE_LANGS -- but the incremental-vs-full equality invariant is
+ * not a same-package property, and Python and Rust had NO incremental
+ * coverage at all. These two tests add it, and the Rust one is deliberately
+ * the confidence-drift scenario: it is red before incremental.ts compares
+ * `(path, confidence)` rather than the resolved path alone.
+ */
+describe('incremental indexing matches a full index for Python and Rust', () => {
+  it('rust: an added file that makes an UNCHANGED importer AMBIGUOUS dilates that importer', async () => {
+    // `src/helper.rs` and `src/helper/mod.rs` both satisfy the module path
+    // `crate::helper`, which rustResolver reports as `ambiguous` (see
+    // src/resolve/rust.ts) with the lexicographically-first path. And
+    // 'src/helper.rs' < 'src/helper/mod.rs' ('.' 46 < '/' 47), so the
+    // WINNING PATH IS UNCHANGED by the addition -- only the confidence
+    // moves, from `resolved` to `ambiguous`. An incremental dilation check
+    // that compares the recomputed path alone therefore sees no change and
+    // never re-resolves `service.rs`, leaving the index claiming `resolved`
+    // where a full build says `ambiguous`: a confident wrong answer that
+    // only a full rebuild corrects.
+    const root = mkdtempSync(join(tmpdir(), 'arch-rs-inc-'))
+    writeFixture(root, {
+      'src/lib.rs': 'pub mod helper;\npub mod service;\n',
+      'src/helper.rs': 'pub fn help(n: i32) -> i32 {\n    n + 1\n}\n',
+      // `service.rs` is NOT rewritten anywhere below -- it is the unchanged
+      // importer whose recorded confidence must still be corrected.
+      'src/service.rs':
+        'use crate::helper::help;\n\npub fn place(n: i32) -> i32 {\n    help(n)\n}\n',
+    })
+    const dbPath = freshDb()
+    await runColdIndex({ repoRoot: root, dbPath })
+
+    const before = GraphStore.open(dbPath)
+    const beforeImport = before.importsForFile(before.fileIdByPath('src/service.rs')!)
+      .find(i => i.rawSpecifier === 'crate::helper::help')!
+    before.close()
+    expect(beforeImport.confidence).toBe('resolved')
+
+    writeFixture(root, { 'src/helper/mod.rs': 'pub fn help(n: i32) -> i32 {\n    n + 2\n}\n' })
+    await runIncrementalIndex({ repoRoot: root, dbPath })
+
+    const after = GraphStore.open(dbPath)
+    try {
+      const serviceId = after.fileIdByPath('src/service.rs')!
+      const afterImport = after.importsForFile(serviceId).find(i => i.rawSpecifier === 'crate::helper::help')!
+      // The PATH is deliberately asserted to be unchanged alongside the
+      // confidence: it is precisely because the path does not move that a
+      // path-only comparison misses this.
+      expect(after.pathsById().get(afterImport.resolvedFileId!)).toBe('src/helper.rs')
+      expect(afterImport.confidence).toBe('ambiguous')
+
+      const incrementalSnapshot = canonicalGraph(after)
+      const coldDb = freshDb()
+      await runColdIndex({ repoRoot: root, dbPath: coldDb })
+      const cold = GraphStore.open(coldDb)
+      try {
+        expect(incrementalSnapshot).toBe(canonicalGraph(cold))
+      } finally {
+        cold.close()
+      }
+    } finally {
+      after.close()
+    }
+  })
+
+  it('python: an added module file that SHADOWS a package directory re-points an unchanged importer', async () => {
+    // pythonResolver tries `<dotted>.py` before `<dotted>/__init__.py`, so
+    // adding `pkg.py` next to an existing `pkg/` package moves `import pkg`
+    // off `pkg/__init__.py` and onto `pkg.py` -- for an importer that did
+    // not itself change.
+    const root = mkdtempSync(join(tmpdir(), 'arch-py-inc-'))
+    writeFixture(root, {
+      'pkg/__init__.py': 'def helper(n):\n    return n + 1\n',
+      // `main.py` is NOT rewritten below.
+      'main.py': 'import pkg\n\n\ndef run():\n    return pkg.helper(2)\n',
+    })
+    const dbPath = freshDb()
+    await runColdIndex({ repoRoot: root, dbPath })
+
+    const before = GraphStore.open(dbPath)
+    const beforeEdge = before.allEdgeDetails().find(e => e.dstName === 'helper')!
+    before.close()
+    expect(beforeEdge.dstPath).toBe('pkg/__init__.py')
+
+    writeFixture(root, { 'pkg.py': 'def helper(n):\n    return n + 5\n' })
+    await runIncrementalIndex({ repoRoot: root, dbPath })
+
+    const after = GraphStore.open(dbPath)
+    try {
+      const mainId = after.fileIdByPath('main.py')!
+      const afterImport = after.importsForFile(mainId).find(i => i.rawSpecifier === 'pkg')!
+      expect(after.pathsById().get(afterImport.resolvedFileId!)).toBe('pkg.py')
+      expect(afterImport.confidence).toBe('resolved')
+
+      const afterEdge = after.allEdgeDetails().find(e => e.dstName === 'helper')!
+      expect(afterEdge.dstPath).toBe('pkg.py')
+
+      const incrementalSnapshot = canonicalGraph(after)
+      const coldDb = freshDb()
+      await runColdIndex({ repoRoot: root, dbPath: coldDb })
+      const cold = GraphStore.open(coldDb)
+      try {
+        expect(incrementalSnapshot).toBe(canonicalGraph(cold))
+      } finally {
+        cold.close()
+      }
+    } finally {
+      after.close()
+    }
+  })
+})

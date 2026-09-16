@@ -90,12 +90,27 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
     // resolutions against the post-change path set and widening the
     // dilation wherever a target would change. No parsing needed: the raw
     // specifier is already stored and resolveImport is pure.
+    //
+    // The comparison covers BOTH the resolved path AND the confidence, not
+    // the path alone (final-fixes.md item 1). When only the JavaScript
+    // resolver existed the two were bijective -- a null path meant
+    // `unresolved` and a non-null one meant `exact`/`resolved`/`heuristic`
+    // -- so a path comparison implied a confidence comparison. The Java and
+    // Rust resolvers broke that: both report `ambiguous` WITH a non-null
+    // path, and the path they report is the lexicographically-first
+    // candidate, which is deliberately STABLE as candidates are added. So
+    // adding `src/helper/mod.rs` alongside an existing `src/helper.rs`
+    // flips `crate::helper` from `resolved` to `ambiguous` while leaving
+    // the winning path exactly where it was ('.' 46 < '/' 47), and a
+    // path-only check would never dilate the importer -- leaving the index
+    // claiming `resolved` where a full rebuild says `ambiguous`, until the
+    // next full rebuild.
     for (const [path, fileId] of idsByPath) {
       if (dilation.has(path)) continue
       for (const imp of store.importsForFile(fileId)) {
-        const { path: recomputed } = resolveImport(path, imp.rawSpecifier, futurePaths, repoRoot)
+        const recomputed = resolveImport(path, imp.rawSpecifier, futurePaths, repoRoot)
         const stored = imp.resolvedFileId === null ? null : pathsById.get(imp.resolvedFileId) ?? null
-        if (recomputed !== stored) {
+        if (recomputed.path !== stored || recomputed.confidence !== imp.confidence) {
           dilation.add(path)
           break
         }
