@@ -106,9 +106,19 @@ describe('rustResolver — crate root is scoped per importing file (fix round 1,
   ])
 
   it('does not resolve crate:: across a workspace member boundary', () => {
+    // Updated for fix round 2: `bar` doesn't exist as a module inside
+    // beta, so (per round 2's crate-root-item fallback) it is now treated
+    // as an item defined directly in BETA's OWN crate root — beta's
+    // `lib.rs`, never alpha's `bar.rs`. The isolation property this test
+    // exists for (never resolving into the WRONG crate) still holds; only
+    // the specific outcome changed from "unresolved" to "resolved, to
+    // beta's own root" now that that fallback exists. The assertion with
+    // teeth is the `.not.toBe` line: the pre-round-2 bug this test was
+    // originally written for would have returned alpha's `bar.rs`.
     const result = rustResolver.resolve('crates/beta/src/foo.rs', 'crate::bar', workspace, '/repo')
-    expect(result.path).toBeNull()
-    expect(result.confidence).toBe('unresolved')
+    expect(result.path).not.toBe('crates/alpha/src/bar.rs')
+    expect(result.path).toBe('crates/beta/src/lib.rs')
+    expect(result.confidence).toBe('resolved')
   })
 
   it('resolves crate:: within the importing file\'s own workspace member', () => {
@@ -124,14 +134,18 @@ describe('rustResolver — crate root is scoped per importing file (fix round 1,
     // Stock Cargo layout: `src/lib.rs` (the library crate root) plus a
     // `src/bin/mytool/main.rs` binary target (its OWN, separate crate
     // root). `crate::helper` from the BIN target must resolve against
-    // `src/bin/mytool` first — there is no helper.rs there, so under
-    // correct per-file scoping this call is `unresolved`, which is the
-    // assertion with teeth: the old global-first-match bug would instead
-    // find `src/lib.rs` globally and wrongly resolve to `src/helper.rs`.
+    // `src/bin/mytool` first — there is no `helper.rs` there. Updated for
+    // fix round 2: since `src/bin/mytool` IS itself a crate root (it
+    // contains `main.rs`), `helper` now falls to that root's OWN file
+    // (`src/bin/mytool/main.rs`) rather than staying unresolved — but the
+    // assertion with teeth is unchanged and still the point of this test:
+    // the old global-first-match bug resolved into `src/helper.rs`
+    // (the library's, a DIFFERENT crate), which this must never do.
     const known = new Set(['src/lib.rs', 'src/helper.rs', 'src/bin/mytool/main.rs'])
     const result = rustResolver.resolve('src/bin/mytool/main.rs', 'crate::helper', known, '/repo')
-    expect(result.path).toBeNull()
-    expect(result.confidence).toBe('unresolved')
+    expect(result.path).not.toBe('src/helper.rs')
+    expect(result.path).toBe('src/bin/mytool/main.rs')
+    expect(result.confidence).toBe('resolved')
   })
 
   it('resolves crate:: from the library crate root itself, unaffected by a sibling bin target', () => {
@@ -147,7 +161,9 @@ describe('rustResolver — crate root is scoped per importing file (fix round 1,
     const forwardResult = rustResolver.resolve('crates/beta/src/foo.rs', 'crate::bar', forward, '/repo')
     const backwardResult = rustResolver.resolve('crates/beta/src/foo.rs', 'crate::bar', backward, '/repo')
     expect(backwardResult).toEqual(forwardResult)
-    expect(backwardResult).toEqual({ path: null, confidence: 'unresolved' })
+    // Updated for fix round 2 (see the first test in this block for why
+    // the value itself changed from `unresolved`).
+    expect(backwardResult).toEqual({ path: 'crates/beta/src/lib.rs', confidence: 'resolved' })
   })
 })
 
@@ -172,5 +188,47 @@ describe('rustResolver — ambiguous module-path collisions (fix round 1, item 3
     const result = rustResolver.resolve('src/main.rs', 'crate::helper::help', known, '/repo')
     expect(result.confidence).toBe('resolved')
     expect(result.path).toBe('src/helper/help.rs')
+  })
+})
+
+// Fix round 2: `crate::Item` and `crate::*` never reached `lib.rs`/`main.rs`
+// — one of the most common `use` forms in real Rust produced no edge at
+// all, since the only candidates ever tried were `<segments>.rs` and
+// `<segments>/mod.rs`, and an item defined directly at the crate root
+// leaves the module portion empty once dropped, matching neither.
+describe('rustResolver — crate::Item and crate::* reach the crate root file (fix round 2)', () => {
+  it('resolves an item defined directly at the crate root to lib.rs', () => {
+    const known = new Set(['src/lib.rs', 'src/helper.rs', 'src/service.rs'])
+    const result = rustResolver.resolve('src/helper.rs', 'crate::Thing', known, '/repo')
+    expect(result.path).toBe('src/lib.rs')
+    expect(result.confidence).toBe('resolved')
+  })
+
+  it('resolves an item defined directly at the crate root to main.rs for a bin crate', () => {
+    const known = new Set(['src/main.rs', 'src/helper.rs', 'src/service.rs'])
+    const result = rustResolver.resolve('src/helper.rs', 'crate::Thing', known, '/repo')
+    expect(result.path).toBe('src/main.rs')
+    expect(result.confidence).toBe('resolved')
+  })
+
+  it('resolves a crate::* glob to the crate root file', () => {
+    const known = new Set(['src/lib.rs', 'src/helper.rs'])
+    const result = rustResolver.resolve('src/helper.rs', 'crate::*', known, '/repo')
+    expect(result.path).toBe('src/lib.rs')
+    expect(result.confidence).toBe('resolved')
+  })
+
+  // Regression guard, named explicitly by the controller: the new
+  // empty-module branch must not swallow an ORDINARY multi-segment path.
+  // Verified by deleting the `isGlob || rest.length === 0` distinction
+  // never enters here in the first place — this specifier's first attempt
+  // (`helper/help`) fails, and its second (`helper`) is non-empty, so it
+  // never reaches the new branch at all; this test simply proves that
+  // remains true after round 2's change.
+  it('still resolves an ordinary multi-segment path normally (regression guard)', () => {
+    const known = new Set(['src/lib.rs', 'src/helper.rs', 'src/service.rs'])
+    const result = rustResolver.resolve('src/service.rs', 'crate::helper::help', known, '/repo')
+    expect(result.path).toBe('src/helper.rs')
+    expect(result.confidence).toBe('resolved')
   })
 })

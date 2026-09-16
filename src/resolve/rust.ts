@@ -104,6 +104,52 @@ function crateRootDirFor(fromPath: string, knownPaths: Set<string>): string {
 }
 
 /**
+ * NAMED ASSUMPTION (fix round 2, documented rather than fixed — both are
+ * real, both are rare, and fixing either properly means reading Cargo.toml
+ * target declarations rather than inferring from `main.rs`/`lib.rs`
+ * filenames alone):
+ *
+ * 1. This treats ANY directory containing an indexed `main.rs`/`lib.rs` as
+ *    a crate root, with no way to tell a genuine Cargo target root (`src/`,
+ *    `src/bin/<name>/`, `examples/<name>/`, `tests/<name>/`) from a
+ *    same-named file that merely happens to sit somewhere else — e.g.
+ *    `mod main;` inside `src/foo/` makes `src/foo` look like a target root,
+ *    so `src/foo/bar.rs`'s `crate::helper` would resolve to
+ *    `src/foo/helper.rs` instead of the real crate root's `src/helper.rs`.
+ *    The real fix is reading Cargo.toml's declared `[[bin]]`/`[lib]` paths.
+ * 2. A single-file bin target (`src/bin/other.rs`, no subdirectory) is
+ *    walked past on the way up to `src/lib.rs`, so it is wrongly treated as
+ *    part of the library crate rather than its own crate — its `crate::`
+ *    should refer to itself. Rare in practice (a single-file bin normally
+ *    reaches the library via its crate name, e.g. `mycrate::`, not
+ *    `crate::`), and the real fix again requires reading Cargo.toml to know
+ *    `src/bin/*.rs` files are each their own crate root regardless of
+ *    whether they contain a `main.rs`-shaped file at all.
+ *
+ * Both are wrong `resolved` answers rather than missing edges, which err on
+ * the more damaging side per-occurrence — but neither has been observed to
+ * matter for the missing-edge problem this resolver otherwise exists to
+ * fix, so they are recorded here rather than attempted.
+ */
+
+/**
+ * The crate root FILE for a directory already known to be a crate root
+ * (`crateRootDirsFrom` membership) — `lib.rs` preferred over `main.rs`.
+ *
+ * This is not run through the `matches.length > 1` ambiguity check `resolve`
+ * uses for the `<path>.rs`-vs-`<path>/mod.rs` collision: unlike that case,
+ * `lib.rs` and `main.rs` coexisting in the same directory is ordinary,
+ * *valid* Cargo (a package with both a library and its default binary
+ * target sharing `src/`) rather than a compile error, and preferring the
+ * library target is a deliberate, simple default rather than a coin flip
+ * between two equally-valid answers.
+ */
+function crateRootFileCandidates(dir: string): string[] {
+  const prefix = dir.length > 0 ? `${dir}/` : ''
+  return [`${prefix}lib.rs`, `${prefix}main.rs`]
+}
+
+/**
  * The two on-disk forms one module path can take: `<path>.rs` (a plain
  * module file) or `<path>/mod.rs` (a module with its own submodules). Both
  * are legal for the same module path — `mod foo;` can be satisfied by
@@ -156,6 +202,16 @@ function candidatesFor(modulePath: string): string[] {
  * `src/helper.rs` and `src/helper/help.rs` indexed, `crate::helper::help`
  * genuinely means the `help` submodule, and longer-first is simply correct,
  * not merely first-matched.
+ *
+ * A crate-relative path can also name an item defined directly IN the crate
+ * root — `use crate::Thing;` (or a `crate::*` glob) — one of the most common
+ * `use` forms in real Rust. Ordinary candidates (`<path>.rs` /
+ * `<path>/mod.rs`) never match this: dropping `Thing` as an item leaves an
+ * EMPTY module portion, and there is no file named after the crate root
+ * DIRECTORY itself (`src.rs` is not a thing). Fix round 2: whenever an
+ * attempt's module portion is empty and the resulting directory is a known
+ * crate root, the target is that crate's root file (`crateRootFileCandidates`)
+ * instead of the ordinary directory-named candidates.
  */
 export const rustResolver: ImportResolver = {
   id: 'rust',
@@ -185,6 +241,20 @@ export const rustResolver: ImportResolver = {
     // last segment dropped.
     const attempts = isGlob || rest.length === 0 ? [rest] : [rest, rest.slice(0, -1)]
     for (const attempt of attempts) {
+      // Fix round 2: an empty module portion means the whole specifier was
+      // consumed as an item (or, for a glob, that the path is bare
+      // `crate::`/`self::`) — the item is defined directly in `baseDir`'s
+      // OWN file. For an ordinary module directory that file is
+      // `<dir>.rs`/`<dir>/mod.rs` (handled below, unchanged); for a crate
+      // root directory it is `lib.rs`/`main.rs` instead, which is why this
+      // is checked before falling through to the generic candidates.
+      if (attempt.length === 0 && crateRootDirsFrom(knownPaths).has(baseDir)) {
+        for (const candidate of crateRootFileCandidates(baseDir)) {
+          if (knownPaths.has(candidate)) return { path: candidate, confidence: 'resolved' }
+        }
+        continue
+      }
+
       const modulePath = [baseDir, ...attempt].filter(s => s.length > 0).join('/')
       if (modulePath.length === 0) continue
 
