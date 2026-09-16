@@ -120,11 +120,15 @@ export class GraphStore {
   private constructor(private readonly db: Database.Database) {}
 
   static open(dbPath: string): GraphStore {
-    let db: Database.Database
+    let db: Database.Database | undefined
     try {
       db = new Database(dbPath)
       db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'))
     } catch (err) {
+      // db may have opened successfully even though the schema exec below
+      // it failed (e.g. a file that opens as SQLite but isn't ours) --
+      // close it here so a corrupt index doesn't leak a file handle.
+      db?.close()
       // A schema-version mismatch (below) is a deliberate, well-formed
       // refusal with its own actionable message. This catches everything
       // else that can go wrong opening the file itself -- truncated,

@@ -6,18 +6,43 @@ import { join } from 'node:path'
 import { buildFixture } from './fixture-builder.js'
 import { indexPathFor } from '../src/repo/repo-source.js'
 import { GraphStore } from '../src/store/graph-store.js'
+import { withTestHome } from './test-home.js'
 
 const FIXTURE = buildFixture({ git: true })
 const CLI = join(process.cwd(), 'dist/cli.js')
+const { home: TEST_HOME, env: TEST_ENV } = withTestHome()
 
 function run(args: string[]): string {
-  return execFileSync('node', [CLI, ...args], { encoding: 'utf8' })
+  return execFileSync('node', [CLI, ...args], { env: TEST_ENV, encoding: 'utf8' })
 }
 
 function commit(repoRoot: string, relativePath: string, content: string): void {
   writeFileSync(join(repoRoot, relativePath), content)
   execFileSync('git', ['add', '-A'], { cwd: repoRoot, stdio: 'ignore' })
   execFileSync('git', ['commit', '-q', '-m', 'follow-up'], { cwd: repoRoot, stdio: 'ignore' })
+}
+
+/**
+ * `run()` shells out to the CLI with HOME redirected to a throwaway
+ * directory so the child process never touches the developer's real
+ * ~/.arch. This test file also opens the resulting index directly via
+ * `indexPathFor`, which resolves through `os.homedir()` in *this*
+ * process -- so calls to it here must see the same redirected HOME the
+ * child process used, or the path they compute won't match what the
+ * child wrote. Scoped to just the `indexPathFor` call and restored
+ * immediately after, so it can't leak into other test files.
+ */
+function indexPathUnderTestHome(repoRoot: string): string {
+  const prevHome = process.env.HOME
+  const prevProfile = process.env.USERPROFILE
+  process.env.HOME = TEST_HOME
+  process.env.USERPROFILE = TEST_HOME
+  try {
+    return indexPathFor(repoRoot)
+  } finally {
+    process.env.HOME = prevHome
+    process.env.USERPROFILE = prevProfile
+  }
 }
 
 describe('arch CLI', () => {
@@ -62,7 +87,7 @@ describe('arch CLI', () => {
   it('reports INCOMPLETE when a previous run did not finish', () => {
     const incompleteFixture = buildFixture({ git: true })
     run(['index', incompleteFixture])
-    const dbPath = indexPathFor(incompleteFixture)
+    const dbPath = indexPathUnderTestHome(incompleteFixture)
     const store = GraphStore.open(dbPath)
     store.setMeta('index_complete', '')
     store.close()
@@ -77,7 +102,7 @@ describe('arch CLI', () => {
     // the actual message buried several lines down.
     const mismatchFixture = buildFixture({ git: true })
     run(['index', mismatchFixture])
-    const dbPath = indexPathFor(mismatchFixture)
+    const dbPath = indexPathUnderTestHome(mismatchFixture)
     const store = GraphStore.open(dbPath)
     store.setMeta('schema_version', '999')
     store.close()

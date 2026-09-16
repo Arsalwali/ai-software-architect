@@ -3,8 +3,10 @@ import { spawn, execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { appendFileSync } from 'node:fs'
 import { buildFixture } from './fixture-builder.js'
+import { withTestHome } from './test-home.js'
 
 const CLI = join(process.cwd(), 'dist/cli.js')
+const { env: TEST_ENV } = withTestHome()
 
 /**
  * Speaks a JSON-RPC `initialize` + `notifications/initialized` handshake
@@ -17,7 +19,7 @@ function runStdioSession(
   timeoutMs = 4000,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn('node', [CLI, 'serve'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn('node', [CLI, 'serve'], { stdio: ['pipe', 'pipe', 'pipe'], env: TEST_ENV })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', d => { stdout += d })
@@ -61,7 +63,7 @@ describe('arch serve', () => {
   it('keeps stdout as pure JSON-RPC during a tool call that reindexes mid-request', async () => {
     // A real index, built by the compiled CLI, exactly as a user would.
     const fixture = buildFixture()
-    execFileSync('node', [CLI, 'index', fixture], { stdio: 'ignore' })
+    execFileSync('node', [CLI, 'index', fixture], { stdio: 'ignore', env: TEST_ENV })
 
     // Dirty the tree after indexing so the freshness gate has an actual
     // delta to absorb inside the upcoming tool call, rather than hitting
