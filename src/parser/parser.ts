@@ -349,14 +349,37 @@ const ENCLOSING_SYMBOL_NODES = new Set([
   'function_item',
 ])
 
+/**
+ * Query capability, not a per-language table: a pattern may capture an
+ * optional `@member` alongside `@specifier` when one import specifier is
+ * spread across two nodes in the grammar. Python's `from pkg import
+ * service` is the case this exists for — the module (`pkg`) and the
+ * imported name (`service`) sit in two different fields, and neither alone
+ * identifies the file the statement actually binds. Joined with a dot,
+ * which is the member separator of every dotted-module language; a language
+ * whose member separator is not `.` (Rust's `::`, say) would need this
+ * function extended, and its grammar already gives it the whole path in one
+ * node, so none does today.
+ *
+ * A base that already ends in the separator takes the member directly:
+ * `from . import thing` has a `relative_import` whose text is `.`, and
+ * joining that with another dot would produce `..thing`, which climbs to
+ * the PARENT package and resolves to a different file entirely.
+ */
+function joinSpecifier(base: string, member: string | null): string {
+  if (member === null) return base
+  return base.endsWith('.') ? base + member : `${base}.${member}`
+}
+
 function extractImports(query: Query, root: Node): RawImport[] {
   const imports: RawImport[] = []
   for (const match of query.matches(root)) {
     const specifier = match.captures.find(c => c.name === 'specifier')
     const tagged = match.captures.find(c => c.name.startsWith('import.'))
     if (!specifier || !tagged) continue
+    const member = match.captures.find(c => c.name === 'member')
     imports.push({
-      specifier: specifier.node.text,
+      specifier: joinSpecifier(specifier.node.text, member?.node.text ?? null),
       kind: tagged.name.slice('import.'.length) as RawImport['kind'],
       line: tagged.node.startPosition.row + 1,
     })

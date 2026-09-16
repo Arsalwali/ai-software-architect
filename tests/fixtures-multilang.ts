@@ -21,13 +21,26 @@ function build(prefix: string, files: Record<string, string>, git: boolean): str
   return root
 }
 
-/** helper.py is imported BOTH absolutely and relatively, so both paths are exercised. */
+/**
+ * helper.py is imported BOTH absolutely and relatively, so both paths are
+ * exercised.
+ *
+ * `runner.py` is a SEPARATE, additive file for the form the three files
+ * above never used (final-fixes.md item 4): `from pkg import helper`, where
+ * the imported name is a SUBMODULE rather than a module component of the
+ * dotted path (`from pkg.helper import helper`) or an attribute of the
+ * package. It is the more common of the two spellings in real Python and
+ * the one that used to resolve to `pkg/__init__.py` -- which is empty here
+ * on purpose, so a wrong resolution leaves the call unresolved and cannot
+ * be mistaken for a correct one.
+ */
 export const PYTHON_FILES: Record<string, string> = {
   'pkg/__init__.py': '',
   'pkg/helper.py': 'def helper(n):\n    return n + 1\n\n\ndef unused():\n    pass\n',
   'pkg/service.py':
     'from .helper import helper\n\n\nclass Service:\n    def place(self, n):\n        return helper(n)\n',
   'main.py': 'from pkg.service import Service\n\n\ndef run():\n    return Service().place(2)\n',
+  'runner.py': 'from pkg import helper\n\n\ndef run_helper(n):\n    return helper.helper(n)\n',
 }
 
 export function buildPythonFixture(options: { git?: boolean } = {}): string {

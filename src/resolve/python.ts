@@ -10,6 +10,12 @@ const UNRESOLVED: ResolvedImport = { path: null, confidence: 'unresolved' }
  * leading-dot specifier is relative to the importing file's package — one dot
  * is that package, each further dot climbs one level.
  *
+ * A specifier's LAST segment may name an item rather than a module: the
+ * import query composes `from pkg import service` into `pkg.service` (see
+ * src/parser/queries/python/imports.scm), and the imported name is a
+ * submodule for that form but an `__init__` attribute for `from pkg import
+ * Service`. Both are tried, longest first — see `resolve` below.
+ *
  * Anything that maps to no indexed file is `unresolved`, which is the right
  * answer for a standard-library or site-packages import. It is never
  * `ambiguous`: nothing matched, so there is no ambiguity to report.
@@ -29,10 +35,28 @@ export const pythonResolver: ImportResolver = {
     if (base === null) return UNRESOLVED
 
     const segments = base.rest.length === 0 ? [] : base.rest.split('.')
-    const joined = [base.dir, ...segments].filter(s => s.length > 0).join('/')
 
-    for (const candidate of [`${joined}.py`, `${joined}/__init__.py`]) {
-      if (knownPaths.has(candidate)) return { path: candidate, confidence: 'resolved' }
+    // A specifier's last segment may name an ITEM inside a module rather
+    // than a module of its own — `from pkg import Service` composes to
+    // `pkg.Service` (see python/imports.scm), and `Service` is a class, not
+    // a file. So the FULL path is tried first (longest form, so a real
+    // `pkg/service.py` submodule wins over `pkg/__init__.py`'s attribute of
+    // the same name — which is the binding Python itself produces for
+    // `from pkg import service`), then the path with its last segment
+    // dropped. The same two-attempt shape javaResolver and rustResolver
+    // already use, for the same reason.
+    //
+    // The dropped attempt is skipped when it would leave nothing: a
+    // single-segment absolute specifier such as `os` or `typing` must stay
+    // `unresolved`, not fall through to a candidate built from an empty
+    // module path.
+    const attempts = segments.length > 1 ? [segments, segments.slice(0, -1)] : [segments]
+    for (const attempt of attempts) {
+      const joined = [base.dir, ...attempt].filter(s => s.length > 0).join('/')
+      if (joined.length === 0) continue
+      for (const candidate of [`${joined}.py`, `${joined}/__init__.py`]) {
+        if (knownPaths.has(candidate)) return { path: candidate, confidence: 'resolved' }
+      }
     }
     return UNRESOLVED
   },
