@@ -71,6 +71,16 @@ export function buildGoFixture(options: { git?: boolean } = {}): string {
  * package name `com.example` (this grammar has no `.*`-suffixed specifier —
  * see src/resolve/java.ts) and must resolve to `unresolved` end-to-end,
  * since `com/example` names a directory, not a file.
+ *
+ * `Service` also imports `com.example.util.StringUtil`, from a genuinely
+ * separate subpackage directory. `Helper`/`Service`/`Runner` all sit in the
+ * SAME directory (`com/example`), which is deliberate for the FQN-resolution
+ * cases above but means a fixture built from those three files alone can
+ * never produce a directory-level (module) edge: `buildModuleGraph`
+ * (src/graph/module-graph.ts) treats "module" as "directory containing the
+ * file" and drops same-directory pairs. `StringUtil` gives `get_coupling`/
+ * `find_cycles`, which operate at that granularity, a real cross-directory
+ * edge to see.
  */
 export const JAVA_FILES: Record<string, string> = {
   'src/main/java/com/example/Helper.java':
@@ -82,12 +92,19 @@ export const JAVA_FILES: Record<string, string> = {
   'src/main/java/com/example/Service.java':
     'package com.example;\n\n' +
     'import com.example.Helper;\n' +
-    'import com.example.*;\n\n' +
+    'import com.example.*;\n' +
+    'import com.example.util.StringUtil;\n\n' +
     'public class Service {\n' +
     '  public int place(int n) { return Helper.help(n); }\n' +
+    '  public String label() { return StringUtil.greet(); }\n' +
     '}\n',
   'src/main/java/com/example/Runner.java':
     'package com.example;\n\npublic interface Runner {\n  void go();\n}\n',
+  'src/main/java/com/example/util/StringUtil.java':
+    'package com.example.util;\n\n' +
+    'public class StringUtil {\n' +
+    '  public static String greet() { return "hi"; }\n' +
+    '}\n',
 }
 
 export function buildJavaFixture(options: { git?: boolean } = {}): string {
@@ -106,9 +123,20 @@ export const RUST_FILES: Record<string, string> = {
   'src/service.rs':
     'use crate::helper::help;\n\npub struct Service {\n    pub n: i32,\n}\n\n' +
     'impl Service {\n    pub fn place(&self) -> i32 {\n        help(self.n)\n    }\n}\n',
+  // `src/util/mod.rs` sits in a genuinely separate directory from
+  // helper.rs/service.rs/main.rs (all directly under `src/`). Those three
+  // alone can never produce a directory-level (module) edge: `moduleOf`
+  // (src/graph/module-graph.ts) is "directory containing the file", and
+  // helper/service/main all share the SAME directory (`src`), so their
+  // mutual imports collapse to a same-module pair the module graph drops.
+  // `util` gives `get_coupling`/`find_cycles`, which operate at that
+  // granularity, a real cross-directory edge (`src` -> `src/util`) to see.
+  'src/util/mod.rs': 'pub fn shout(s: &str) -> String {\n    format!("{}!", s)\n}\n',
   'src/main.rs':
-    'mod helper;\nmod service;\n\nuse crate::service::Service;\n\n' +
-    'fn main() {\n    let s = Service { n: 2 };\n    println!("{}", s.place());\n}\n',
+    'mod helper;\nmod service;\nmod util;\n\n' +
+    'use crate::service::Service;\nuse crate::util::shout;\n\n' +
+    'fn main() {\n    let s = Service { n: 2 };\n    println!("{}", s.place());\n    ' +
+    'println!("{}", shout("hi"));\n}\n',
 }
 
 export function buildRustFixture(options: { git?: boolean } = {}): string {

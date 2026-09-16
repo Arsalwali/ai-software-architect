@@ -159,3 +159,57 @@ file it recognises as a package entry point, as `exportedFromEntryPoint`.
 not a safety verdict, and it is not a claim that changing the symbol is safe.
 An unconventionally named entry file, or one with no matching `package.json`
 declaration, will also read `false`.
+
+## Language support
+
+Symbols, imports and call sites are extracted for **TypeScript, TSX,
+JavaScript, JSX, Python, Go, Java, and Rust**. Each language pairs a
+tree-sitter grammar with a resolver that turns raw import specifiers into
+edges between files:
+
+- **Python** — resolves `import`/`from ... import` specifiers as module
+  paths relative to the repository root (absolute, e.g. `pkg.service`) and
+  relative to the importing file (`from .helper import helper`), matching
+  them against indexed `.py` files and `__init__.py` packages.
+- **Go** — resolves import paths against the module path declared in
+  `go.mod` plus the importing package's directory, so
+  `import "example.com/m/helper"` in a repo whose `go.mod` declares `module
+  example.com/m` finds `helper/`.
+- **Java** — derives one or more source roots (e.g. `src/main/java`) from the
+  indexed paths themselves rather than assuming a convention, then resolves
+  a named import's fully-qualified name against `<sourceRoot>/<package
+  path>/<Type>.java`. A `com.example.*` wildcard captures as the bare
+  package name, which names a directory, not a file, and resolves
+  `unresolved` rather than guessing a member.
+- **Rust** — resolves `use` paths as a module tree rooted at each file's own
+  crate root (the nearest ancestor `main.rs`/`lib.rs`), handling
+  `crate::`/`self::`/`super::` paths, module-directory `mod.rs` files, and
+  crate-root items (`crate::Item` falling through to `lib.rs`/`main.rs`
+  itself).
+
+**An unresolved import yields no edge.** A repository whose import style the
+resolver does not recognise will index with real symbols and files but a
+sparse dependency graph: `get_repo_overview`'s `edgeConfidence` and per-file
+`imports.confidence` make this visible rather than hiding it behind a
+confident-looking but empty answer. `ambiguous` (several candidates matched)
+and `unresolved` (no candidate matched — an external package, the standard
+library, or an import form not yet understood) are reported as distinct
+tiers; never assume one when you see the other.
+
+A known real-code gap, not a fixture artifact: Go's resolver is
+import-based, but Go itself does not require an import between two files in
+the **same package** — a common idiom (one package split across many files
+in a single directory, e.g. spf13/cobra) means calls between those sibling
+files carry no import edge for the resolver to follow, so `get_coupling` and
+`find_cycles` see little or nothing for a Go package shaped this way even
+though genuine cross-package imports resolve correctly. See
+`.superpowers/sdd/2026-09-16-multi-language/task-6-report.md` for the
+measurement this was found with.
+
+**Not supported.** The following grammars ship inside the installed
+`@vscode/tree-sitter-wasm` package but have no query files and no resolver:
+Ruby, C#, PHP, C++, bash, CSS, INI, PowerShell, and regex. A file in one of
+these languages is still discovered and indexed, but with `lang: null` and
+no symbols — it contributes to `totals.files` but not to `totals.symbols`,
+and shows up in `get_repo_overview`'s language breakdown as a `null`-language
+row rather than silently vanishing.
