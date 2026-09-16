@@ -161,6 +161,63 @@ describe('java parsing', () => {
     const inner = parser.parse('Outer.java', ANNOTATION_SOURCE).symbols.find(s => s.name === 'Inner')!
     expect(inner.exported).toBe(true)
   })
+
+  // final-fixes.md item 3. `record_declaration` and `annotation_type_declaration`
+  // were added to ENCLOSING_CLASS_TYPES.java (so the nearest-type walk stops
+  // at them) but never to symbols.scm, so neither produced a SYMBOL. A
+  // record's methods therefore carried `parentName: "Circle"` pointing at a
+  // symbol that did not exist, `new Circle(...)` could never resolve, and
+  // `get_symbol Circle` found nothing. Records are ordinary in Java 17+.
+  // Node names `record_declaration` / `annotation_type_declaration` and
+  // their `name` fields were verified against tree-sitter-java.wasm by probe
+  // before this query was written.
+  describe('records and annotation types', () => {
+    const RECORD_AND_ANNOTATION_SOURCE =
+      'package com.example;\n\n' +
+      'public record Circle(int r) { public int area() { return r; } }\n' +
+      'public @interface Ann { }\n' +
+      'record Bare(int x) { int q() { return x; } }\n'
+
+    const symbols = (): ReturnType<typeof parser.parse>['symbols'] =>
+      parser.parse('Shapes.java', RECORD_AND_ANNOTATION_SOURCE).symbols
+
+    it('captures a record as a class symbol and an annotation type as an interface symbol', () => {
+      // A record IS a class (JLS: "a record class") and an annotation type
+      // IS an interface (JLS 9.6) — the same reading the export rule in
+      // src/parser/parser.ts already relies on — so neither needs a new
+      // SymbolKind.
+      expect(symbols().map(s => `${s.kind}:${s.name}`).sort())
+        .toEqual(['class:Bare', 'class:Circle', 'interface:Ann', 'method:area', 'method:q'])
+    })
+
+    it('gives a record method a parentName that names a symbol which actually exists', () => {
+      const all = symbols()
+      const area = all.find(s => s.name === 'area')!
+      expect(area.parentName).toBe('Circle')
+      expect(all.some(s => s.name === area.parentName)).toBe(true)
+    })
+
+    it('exports a public record and a public annotation type, but not a package-private record', () => {
+      const all = symbols()
+      expect(all.find(s => s.name === 'Circle')!.exported).toBe(true)
+      expect(all.find(s => s.name === 'Ann')!.exported).toBe(true)
+      expect(all.find(s => s.name === 'Bare')!.exported).toBe(false)
+    })
+
+    it('keeps a record member governed by the record, not by any enclosing interface', () => {
+      // The record itself now being a symbol must not disturb the
+      // nearest-type rule already covered above: `q` has no modifier and
+      // its nearest type is a record, which grants no implicit public.
+      expect(symbols().find(s => s.name === 'q')!.exported).toBe(false)
+    })
+
+    it('exports a record nested in an interface, whose members are implicitly public', () => {
+      const NESTED = 'package com.example;\n\n' +
+        'public sealed interface Shape {\n  record Circle(int r) implements Shape { }\n}\n'
+      const circle = parser.parse('Shape.java', NESTED).symbols.find(s => s.name === 'Circle')!
+      expect(circle.exported).toBe(true)
+    })
+  })
 })
 
 describe('java produces a real graph', () => {
