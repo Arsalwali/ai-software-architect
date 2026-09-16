@@ -39,6 +39,18 @@ export function buildPythonFixture(options: { git?: boolean } = {}): string {
  * capitalisation alone, so a lowercase `help` would never enter
  * `exportedSymbolsByFile` and the cross-file call edge below could never
  * resolve, regardless of whether the import itself resolves.
+ *
+ * `single/one.go` and `single/two.go` are a SEPARATE, additive pair: one
+ * Go package split across two files in one directory, calling each other
+ * with NO import statement at all -- the ordinary Go idiom that
+ * `helper`/`service`/`main` above, being three separate packages, never
+ * exercises. `two.go`'s `Combine` calls `one.go`'s `help`, deliberately
+ * lowercase/unexported (and deliberately NOT named `Place`, to avoid
+ * colliding with `service.go`'s `Place` method in symbol-name lookups
+ * elsewhere in this suite): Go's same-package access needs no `import` AND
+ * no export, and a resolver that filtered same-directory candidates by
+ * exported-ness would leave this specific call unresolved. See
+ * task-6-fixes.md and `src/indexer/same-package.ts`.
  */
 export const GO_FILES: Record<string, string> = {
   'go.mod': 'module example.com/m\n\ngo 1.22\n',
@@ -50,6 +62,8 @@ export const GO_FILES: Record<string, string> = {
   'main.go':
     'package main\n\nimport (\n\t"fmt"\n\t"example.com/m/service"\n)\n\n' +
     'func main() {\n\ts := service.Service{N: 2}\n\tfmt.Println(s.Place())\n}\n',
+  'single/one.go': 'package single\n\nfunc help(n int) int {\n\treturn n + 1\n}\n',
+  'single/two.go': 'package single\n\nfunc Combine(n int) int {\n\treturn help(n)\n}\n',
 }
 
 export function buildGoFixture(options: { git?: boolean } = {}): string {
@@ -81,6 +95,18 @@ export function buildGoFixture(options: { git?: boolean } = {}): string {
  * file" and drops same-directory pairs. `StringUtil` gives `get_coupling`/
  * `find_cycles`, which operate at that granularity, a real cross-directory
  * edge to see.
+ *
+ * `Worker` is a SEPARATE, additive class exercising the case
+ * `Service`/`Helper` do NOT: real same-package Java omits the import
+ * entirely (unlike `Service`'s `import com.example.Helper;` above, which is
+ * legal but unnecessary and, left as the only same-package call site here,
+ * would hide that this resolver even needs a same-directory fallback).
+ * `Worker` calls `Helper.internal`, the PACKAGE-PRIVATE method, with no
+ * import of `Helper` at all -- same package, same directory, no import
+ * needed for either the class name or a package-private member. A resolver
+ * that filtered same-directory candidates by exported-ness would leave this
+ * unresolved, since `internal` is exactly the member that filter would
+ * drop. See task-6-fixes.md and `src/indexer/same-package.ts`.
  */
 export const JAVA_FILES: Record<string, string> = {
   'src/main/java/com/example/Helper.java':
@@ -104,6 +130,11 @@ export const JAVA_FILES: Record<string, string> = {
     'package com.example.util;\n\n' +
     'public class StringUtil {\n' +
     '  public static String greet() { return "hi"; }\n' +
+    '}\n',
+  'src/main/java/com/example/Worker.java':
+    'package com.example;\n\n' +
+    'public class Worker {\n' +
+    '  public int run(int n) { return Helper.internal(n); }\n' +
     '}\n',
 }
 

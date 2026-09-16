@@ -5,6 +5,7 @@ import { gitHeadCommit } from '../repo/repo-source.js'
 import { discoverFiles } from './discover.js'
 import { resolveImport } from './resolve-imports.js'
 import { resolveCallsForFile } from './resolve-calls.js'
+import { sameDirectoryFileIds } from './same-package.js'
 import { parseAll } from './parse-pool.js'
 
 export interface ColdIndexOptions {
@@ -97,6 +98,10 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     // Phase 4b — resolve calls against the now-complete symbol table
     const symbolsByFile = store.symbolsByFile()
     const exportedByFile = store.exportedSymbolsByFile()
+    // Go/Java only (see same-package.ts): same-directory siblings need no
+    // import at all, so their candidate symbols must be gathered separately
+    // from the import-based `exportedByFile` above.
+    const sameDirFileIds = sameDirectoryFileIds(knownPaths, fileIdByPath)
     const edges: EdgeInput[] = []
 
     for (const file of parsed) {
@@ -107,6 +112,7 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
         localSymbols: symbolsByFile.get(fileId) ?? [],
         importedFileIds: importedFileIds.get(fileId) ?? [],
         exportedByFile,
+        sameDirectorySymbols: (sameDirFileIds.get(fileId) ?? []).flatMap(id => symbolsByFile.get(id) ?? []),
         callSites: file.callSites,
       }))
     }

@@ -196,15 +196,36 @@ and `unresolved` (no candidate matched — an external package, the standard
 library, or an import form not yet understood) are reported as distinct
 tiers; never assume one when you see the other.
 
-A known real-code gap, not a fixture artifact: Go's resolver is
-import-based, but Go itself does not require an import between two files in
-the **same package** — a common idiom (one package split across many files
-in a single directory, e.g. spf13/cobra) means calls between those sibling
-files carry no import edge for the resolver to follow, so `get_coupling` and
-`find_cycles` see little or nothing for a Go package shaped this way even
-though genuine cross-package imports resolve correctly. See
-`.superpowers/sdd/2026-09-16-multi-language/task-6-report.md` for the
-measurement this was found with.
+**Go and Java scope names by directory, not by import.** Neither language
+requires an import between two files in the same package — a common idiom
+(one package split across many files in a single directory, e.g.
+spf13/cobra; two classes in one Java package) means calls between those
+sibling files carry no import edge at all. Cross-file call resolution for
+these two languages therefore also searches every OTHER file in the same
+directory, not only files reached through a resolved import, and does so
+without filtering by export status: Go sees lowercase identifiers and Java
+sees package-private members within their own package, and both are
+ordinary, resolvable same-package calls — filtering them out would leave
+most real intra-package calls unresolved. TypeScript, JavaScript, Python,
+and Rust are unaffected: those languages genuinely require an import (or a
+`use`/`crate::` path) to reference another file's declaration, so no
+same-directory fallback is applied there.
+
+This fixes `impact_of`, `trace_flow`, and `get_dependencies` for
+same-package Go/Java calls — re-indexing spf13/cobra after this fix went
+from 0 to 1,437 cross-file heuristic call edges among its own `.go` files.
+It does **not** change `get_coupling` or `find_cycles`: both build their
+module graph from resolved *imports* aggregated by directory, and a
+same-package call is by definition a same-directory one, which that
+aggregation always drops as internal to one module regardless of how the
+call itself resolves. A Go package that is one directory with no
+subpackages — cobra's own root package is exactly this shape — will
+therefore always show `efferent: 0` for that module in `get_coupling`, not
+because the call graph is invisible (it is not, once you ask `trace_flow`
+or `impact_of`) but because inter-module coupling has nothing to measure
+when a package never crosses a directory boundary. See
+`.superpowers/sdd/2026-09-16-multi-language/task-6-report.md` for the full
+before/after measurement.
 
 **Not supported.** The following grammars ship inside the installed
 `@vscode/tree-sitter-wasm` package but have no query files and no resolver:

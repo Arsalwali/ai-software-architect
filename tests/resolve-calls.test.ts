@@ -30,6 +30,7 @@ describe('resolveCallsForFile', () => {
       localSymbols,
       importedFileIds: [2],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [call('helper')],
     })
     expect(edges).toHaveLength(1)
@@ -42,6 +43,7 @@ describe('resolveCallsForFile', () => {
       localSymbols,
       importedFileIds: [2, 3],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [call('helper')],
     })
     expect(edges).toHaveLength(2)
@@ -55,6 +57,7 @@ describe('resolveCallsForFile', () => {
       localSymbols: [symbol(10, 1, 'helper', false)],
       importedFileIds: [2, 3],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [call('helper')],
     })
     expect(edges).toHaveLength(1)
@@ -67,6 +70,7 @@ describe('resolveCallsForFile', () => {
       localSymbols,
       importedFileIds: [],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [call('console')],
     })
     expect(edges).toHaveLength(1)
@@ -81,6 +85,7 @@ describe('resolveCallsForFile', () => {
       localSymbols,
       importedFileIds: [2],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [call('helper', 'localFn')],
     })
     expect(edges[0].srcSymbolId).toBe(10)
@@ -92,6 +97,7 @@ describe('resolveCallsForFile', () => {
       localSymbols,
       importedFileIds: [2],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [call('helper', null)],
     })
     expect(edges[0].srcSymbolId).toBeNull()
@@ -104,9 +110,100 @@ describe('resolveCallsForFile', () => {
       localSymbols,
       importedFileIds: [2],
       exportedByFile,
+      sameDirectorySymbols: [],
       callSites: [{ name: 'helper', line: 9, enclosingSymbol: null, kind: 'instantiates' }],
     })
     expect(edges[0].kind).toBe('instantiates')
+  })
+})
+
+// task-6-fixes.md: for Go and Java, package scope IS the directory, so
+// sibling files in one directory reference each other WITHOUT any import at
+// all. `sameDirectorySymbols` is the candidate source that makes those
+// calls resolvable; these tests exercise the merge logic directly, in
+// isolation from any particular language's fixture.
+describe('resolveCallsForFile — same-directory candidates (task-6-fixes.md)', () => {
+  it('resolves a call to an UNEXPORTED symbol declared in a same-directory sibling file', () => {
+    // The requirement called out explicitly as most likely to be gotten
+    // wrong: same-package candidates must NOT be filtered by `exported`.
+    // Go sees lowercase identifiers and Java sees package-private members
+    // within their own package -- an `exported: false` sibling symbol must
+    // still resolve. A regression that filtered this list by `exported`
+    // would turn this into an `unresolved` edge instead.
+    const edges = resolveCallsForFile({
+      srcFileId: 1,
+      localSymbols,
+      importedFileIds: [],
+      exportedByFile: new Map(),
+      sameDirectorySymbols: [symbol(40, 4, 'siblingFn', false)],
+      callSites: [call('siblingFn')],
+    })
+    expect(edges).toHaveLength(1)
+    expect(edges[0]).toMatchObject({ dstSymbolId: 40, dstFileId: 4, confidence: 'heuristic' })
+  })
+
+  it('a local declaration shadows a same-directory sibling, exactly as it shadows an import', () => {
+    const edges = resolveCallsForFile({
+      srcFileId: 1,
+      localSymbols: [symbol(10, 1, 'helper', false)],
+      importedFileIds: [],
+      exportedByFile: new Map(),
+      sameDirectorySymbols: [symbol(60, 6, 'helper')],
+      callSites: [call('helper')],
+    })
+    expect(edges).toHaveLength(1)
+    expect(edges[0]).toMatchObject({ dstSymbolId: 10, confidence: 'heuristic' })
+  })
+
+  it('treats a same-directory match and an imported match of the same name as genuinely ambiguous', () => {
+    // `helper` matches BOTH an imported file's export (file 2) AND a
+    // same-directory sibling (file 5): two distinct candidates, correctly
+    // fanned out, not one silently preferred over the other.
+    const edges = resolveCallsForFile({
+      srcFileId: 1,
+      localSymbols,
+      importedFileIds: [2],
+      exportedByFile,
+      sameDirectorySymbols: [symbol(50, 5, 'helper')],
+      callSites: [call('helper')],
+    })
+    expect(edges).toHaveLength(2)
+    expect(edges.every(e => e.confidence === 'ambiguous')).toBe(true)
+    expect(edges.map(e => e.dstSymbolId).sort()).toEqual([20, 50])
+  })
+
+  it('does not double-count a symbol reached via BOTH an import and same-directory scanning', () => {
+    // A same-package file that is also (redundantly, unusually) imported --
+    // the exact symbol object (same id, same fileId) appears in both
+    // `exportedByFile` and `sameDirectorySymbols`. Without id-based
+    // deduplication this manufactures candidates.length === 2 and a false
+    // `ambiguous` edge out of what is really one candidate.
+    const dup = symbol(20, 2, 'helper')
+    const edges = resolveCallsForFile({
+      srcFileId: 1,
+      localSymbols,
+      importedFileIds: [2],
+      exportedByFile: new Map([[2, [dup]]]),
+      sameDirectorySymbols: [dup],
+      callSites: [call('helper')],
+    })
+    expect(edges).toHaveLength(1)
+    expect(edges[0]).toMatchObject({ dstSymbolId: 20, confidence: 'heuristic' })
+  })
+
+  it('orders ambiguous candidates deterministically regardless of input order', () => {
+    const a = symbol(70, 7, 'dup')
+    const b = symbol(80, 8, 'dup')
+    const forward = resolveCallsForFile({
+      srcFileId: 1, localSymbols: [], importedFileIds: [], exportedByFile: new Map(),
+      sameDirectorySymbols: [a, b], callSites: [call('dup')],
+    })
+    const backward = resolveCallsForFile({
+      srcFileId: 1, localSymbols: [], importedFileIds: [], exportedByFile: new Map(),
+      sameDirectorySymbols: [b, a], callSites: [call('dup')],
+    })
+    expect(forward.map(e => e.dstSymbolId)).toEqual(backward.map(e => e.dstSymbolId))
+    expect(forward.map(e => e.dstSymbolId)).toEqual([70, 80])
   })
 })
 

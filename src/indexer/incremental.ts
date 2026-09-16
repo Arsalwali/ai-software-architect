@@ -5,6 +5,7 @@ import { gitHeadCommit } from '../repo/repo-source.js'
 import { computeChangeSet } from './changeset.js'
 import { resolveImport } from './resolve-imports.js'
 import { resolveCallsForFile } from './resolve-calls.js'
+import { groupBySamePackage, sameDirectoryFileIds } from './same-package.js'
 import { parseAll } from './parse-pool.js'
 import { runColdIndex, type IndexReport } from './pipeline.js'
 
@@ -101,6 +102,25 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
       }
     }
 
+    // Same-package (same-directory) dilation, for Go/Java only (see
+    // same-package.ts): sibling files in one directory reference each
+    // other WITHOUT any import at all, so neither of the two widenings
+    // above -- both walking RESOLVED IMPORT edges -- can ever discover that
+    // relationship. Any changed, added, or deleted file must dilate every
+    // OTHER file sharing its (language, directory) key, checked against
+    // BOTH the pre-change and post-change known-path sets: a file moving
+    // into or out of a directory changes its siblings' candidate pool
+    // exactly as an import target appearing or disappearing does above.
+    const sameDirGroupByPath = new Map<string, string[]>()
+    for (const bucket of groupBySamePackage(new Set([...idsByPath.keys(), ...futurePaths])).values()) {
+      for (const path of bucket) sameDirGroupByPath.set(path, bucket)
+    }
+    for (const path of [...changes.changed, ...changes.deleted]) {
+      for (const sibling of sameDirGroupByPath.get(path) ?? []) {
+        if (sibling !== path) dilation.add(sibling)
+      }
+    }
+
     // A file that vanished cannot be re-parsed.
     for (const gone of changes.deleted) dilation.delete(gone)
 
@@ -154,6 +174,10 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
     // Re-resolve calls for the dilation against the now-current symbol table.
     const symbolsByFile = store.symbolsByFile()
     const exportedByFile = store.exportedSymbolsByFile()
+    // Go/Java only: same-directory siblings need no import at all, so their
+    // candidate symbols are gathered separately from the import-based
+    // `exportedByFile` above -- mirrors pipeline.ts's cold-index path.
+    const sameDirFileIds = sameDirectoryFileIds(knownPaths, freshIds)
     const edges: EdgeInput[] = []
 
     for (const path of toParse) {
@@ -165,6 +189,7 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
         localSymbols: symbolsByFile.get(fileId) ?? [],
         importedFileIds: importedFileIds.get(fileId) ?? [],
         exportedByFile,
+        sameDirectorySymbols: (sameDirFileIds.get(fileId) ?? []).flatMap(id => symbolsByFile.get(id) ?? []),
         callSites: file.callSites,
       }))
     }

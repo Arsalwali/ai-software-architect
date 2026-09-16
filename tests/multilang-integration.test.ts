@@ -142,6 +142,39 @@ describe('multi-language integration: the analysis tools see what each resolver 
     expect(crossFileHeuristicCalls.length).toBeGreaterThan(0)
   })
 
+  // task-6-fixes.md: Go and Java scope names by DIRECTORY, so two files in
+  // the SAME package never import one another -- the ordinary, dominant
+  // layout for both languages (one Go package split across many files; two
+  // Java classes in one package). Claim 3 above is satisfied by an
+  // IMPORT-mediated cross-file call in both fixtures and would stay green
+  // even if this case were completely unresolved, so it is asserted here on
+  // its own, by symbol name rather than by "any cross-file edge", naming
+  // exactly the call this mechanism exists for. `single/two.go`'s `Combine`
+  // calls `single/one.go`'s unexported `help` with no import; `Worker.java`
+  // calls `Helper.java`'s package-private `internal` with no import either
+  // -- both would be `unresolved` without the same-directory candidate
+  // pool `src/indexer/same-package.ts` adds, and neither symbol is
+  // exported, so a fix that filtered same-directory candidates by
+  // `exported` would leave both unresolved too.
+  it('go: a same-package cross-file call with NO import resolves at heuristic confidence', () => {
+    const store = stores.get('go')!
+    const edge = store.allEdgeDetails().find(e =>
+      e.kind === 'calls' && e.dstName === 'help' && e.srcPath === 'single/two.go')
+    expect(edge, 'no edge from single/two.go to help').toBeDefined()
+    expect(edge!.dstPath).toBe('single/one.go')
+    expect(edge!.confidence).toBe('heuristic')
+  })
+
+  it('java: a same-package cross-file call to a package-private member with NO import resolves at heuristic confidence', () => {
+    const store = stores.get('java')!
+    const edge = store.allEdgeDetails().find(e =>
+      e.kind === 'calls' && e.dstName === 'internal' &&
+      e.srcPath === 'src/main/java/com/example/Worker.java')
+    expect(edge, 'no edge from Worker.java to internal').toBeDefined()
+    expect(edge!.dstPath).toBe('src/main/java/com/example/Helper.java')
+    expect(edge!.confidence).toBe('heuristic')
+  })
+
   // Claim 4: the MODULE graph has a real edge. Without this, find_cycles and
   // get_coupling are dead for the language even though symbols look healthy
   // -- the module graph is built from resolved imports, a different code
