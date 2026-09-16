@@ -73,6 +73,45 @@ describe('findCycles at module scope', () => {
   })
 })
 
+describe('findCycles aggregationArtifact', () => {
+  it('flags a module cycle manufactured by directory bucketing, with evidence for each hop', () => {
+    // "root" bundles a leaf everything imports (types.ts) with an entry
+    // point that imports into a subdirectory (entry.ts). That gives the
+    // module graph edges root->sub and sub->root even though no file loops
+    // back to itself: sub/a.ts -> root/types.ts is a dead end, and
+    // root/entry.ts -> sub/a.ts -> root/types.ts never returns to entry.ts.
+    const s = store(
+      ['root/types.ts', 'root/entry.ts', 'sub/a.ts'],
+      [['sub/a.ts', 'root/types.ts'], ['root/entry.ts', 'sub/a.ts']],
+    )
+    const r = findCycles(s, { scope: 'module', minSize: 2, limit: 10 })
+    expect(r.cycles).toHaveLength(1)
+    expect(r.cycles[0].members).toEqual(['root', 'sub'])
+    expect(r.cycles[0].aggregationArtifact).toBe(true)
+
+    const hops = r.cycles[0].hops!
+    expect(hops.find(h => h.from === 'sub' && h.to === 'root')?.via)
+      .toEqual([{ fromFile: 'sub/a.ts', toFile: 'root/types.ts' }])
+    expect(hops.find(h => h.from === 'root' && h.to === 'sub')?.via)
+      .toEqual([{ fromFile: 'root/entry.ts', toFile: 'sub/a.ts' }])
+
+    // The evidence isn't just plausible-looking -- there really is no cycle
+    // among the actual files, confirmed independently at file scope.
+    expect(findCycles(s, { scope: 'file', minSize: 2, limit: 10 }).cycles).toEqual([])
+    s.close()
+  })
+
+  it('does not flag a genuine cross-module cycle as an artifact', () => {
+    // Module A's file imports module B's file and vice versa: a real
+    // file-to-file loop exists, not just a directory-bucketing coincidence.
+    const s = store(['a/x.ts', 'b/y.ts'], [['a/x.ts', 'b/y.ts'], ['b/y.ts', 'a/x.ts']])
+    const r = findCycles(s, { scope: 'module', minSize: 2, limit: 10 })
+    expect(r.cycles).toHaveLength(1)
+    expect(r.cycles[0].aggregationArtifact).toBe(false)
+    s.close()
+  })
+})
+
 describe('findCycles at file scope', () => {
   it('finds a cycle between two files inside one module', () => {
     const s = store(['m/a.ts', 'm/b.ts'], [['m/a.ts', 'm/b.ts'], ['m/b.ts', 'm/a.ts']])
