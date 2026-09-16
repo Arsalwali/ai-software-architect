@@ -160,6 +160,12 @@ not a safety verdict, and it is not a claim that changing the symbol is safe.
 An unconventionally named entry file, or one with no matching `package.json`
 declaration, will also read `false`.
 
+Entry points are detected by conventional basename plus, for JavaScript and
+TypeScript, `package.json`'s `main`/`module`/`bin`/`exports`. Each language
+declares its own basenames in the parser's language registry — `index.*`,
+`main.*`, `server.*`, `app.*` and `cli.*` for JS/TS, `main.go`, `main.rs`,
+`__main__.py` and `Main.java` for the rest.
+
 ## Language support
 
 Symbols, imports and call sites are extracted for **TypeScript, TSX,
@@ -170,7 +176,11 @@ edges between files:
 - **Python** — resolves `import`/`from ... import` specifiers as module
   paths relative to the repository root (absolute, e.g. `pkg.service`) and
   relative to the importing file (`from .helper import helper`), matching
-  them against indexed `.py` files and `__init__.py` packages.
+  them against indexed `.py` files and `__init__.py` packages. For the
+  `from <module> import <name>` form the imported name is part of the
+  target: `from pkg import service` resolves to `pkg/service.py` when that
+  submodule exists, and falls back to `pkg/__init__.py` when the name is an
+  item defined there (`from pkg import Service`) rather than a submodule.
 - **Go** — strips the module path declared in `go.mod`'s `module` line from
   the front of the import specifier; what remains names a package
   **directory**, not a file (a Go package is one or more `.go` files sharing
