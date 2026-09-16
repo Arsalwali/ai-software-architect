@@ -60,6 +60,58 @@ wrong-repo answer with no error to signal the mismatch. If you register
 explicitly on every call (or have the client do so) rather than relying on
 the default.
 
+### The ten tools
+
+**Orientation**
+
+- `get_repo_overview` — structural overview of an indexed repository: file
+  and symbol totals, languages, top-level modules, detected entry points,
+  skipped files by reason, and the edge confidence breakdown. Start here.
+- `describe_module` — a module's files, exported surface, dependencies and
+  dependents with weights, and coupling metrics.
+
+**Search and navigation**
+
+- `search_code` — find symbols and text in the indexed repository, ranked
+  exact-symbol then partial-symbol then full text.
+- `get_symbol` — definition site, signature, export status, and
+  caller/callee counts for every symbol matching a name.
+
+**Graph traversal**
+
+- `get_dependencies` — walk the dependency graph from a file, directory, or
+  symbol, in either direction, with a confidence filter.
+- `impact_of` — what could break if a symbol changes, as transitive
+  references bucketed by evidence.
+- `trace_flow` — forward call-graph walk from an entry point, as a tree
+  annotated with files and module boundaries crossed.
+
+**Analysis**
+
+- `find_cycles` — strongly-connected components in the dependency graph, at
+  module or file scope.
+- `get_coupling` — per-module afferent/efferent coupling and instability,
+  plus the heaviest module-to-module dependencies.
+- `find_hotspots` — technical-debt candidates ranked by structural weight
+  multiplied by git churn, with every raw signal reported alongside the
+  score.
+
+The three analysis tools are built to be honest about their own limits
+rather than to look more authoritative than the data supports. `get_coupling`
+weights each module-to-module edge by the number of distinct file-to-file
+dependencies crossing the boundary, not by import statement count, so a file
+that imports the same neighbour twice is not double-counted. `find_hotspots`
+depends on git history for its churn signal; outside a git repository (or
+when history collection otherwise fails) it reports `gitAvailable: false`
+and degrades to a structural-only ranking rather than fabricating a churn
+number. `find_cycles` flags a module-scope cycle's `aggregationArtifact` as
+`true` when it exists only because unrelated files happen to share a parent
+directory, not because anything in the code actually depends circularly —
+that distinction is the difference between a result worth investigating and
+one worth ignoring. And across every tool, any list capped by `limit`
+reports its true, uncapped total in a `truncated` field rather than
+silently trimming the answer.
+
 ### What the confidence tiers mean
 
 Every edge carries the evidence behind it, and the distinction matters. The

@@ -30,11 +30,13 @@ beforeAll(async () => {
 })
 
 describe('tool registration', () => {
-  it('exposes exactly the four core tools', async () => {
+  it('exposes exactly the full ten-tool surface', async () => {
     const { tools } = await client.listTools()
-    expect(tools.map(t => t.name).sort()).toEqual(
-      ['get_dependencies', 'get_repo_overview', 'impact_of', 'search_code'],
-    )
+    expect(tools.map(t => t.name).sort()).toEqual([
+      'describe_module', 'find_cycles', 'find_hotspots', 'get_coupling',
+      'get_dependencies', 'get_repo_overview', 'get_symbol', 'impact_of',
+      'search_code', 'trace_flow',
+    ])
   })
 
   it('gives every tool a description', async () => {
