@@ -123,25 +123,39 @@ describe('javaResolver ranked by shared leading path segments (fix round 2)', ()
     )).toEqual({ path: 'moduleB/src/main/java/com/example/Config.java', confidence: 'resolved' })
   })
 
-  it('reports ambiguous — not the round-2 doc\'s predicted resolved — for a coincidental deeper-directory collision that ties exactly with the real file', () => {
-    // IMPORTANT, flagged for the controller rather than silently patched:
-    // task-4-fixes-round2.md claims this exact fixture (carried over
-    // unchanged from fix round 1) should now resolve, with the real file
-    // sharing 5 leading segments against the coincidental file's 4. It
-    // does not. Both candidates are identical through 'proj/src/main/java/
-    // com' (the coincidental one is only that path plus one extra 'com'
-    // segment before its filename), so for ANY fromPath, the two candidates
-    // necessarily share the SAME number of leading segments with fromPath
-    // up through that common prefix — they can only tie or the deeper one
-    // can win outright (if fromPath's own next segment happens to be
-    // 'com'), never lose. Verified by direct computation for both
-    // candidate fromPath shapes tried ('.../other/Service.java' below, and
-    // '.../com/Service.java'): both tie, at 4 and 5 segments respectively,
-    // never split 5-vs-4. So the correct, honest outcome for this
-    // fixture — under the algorithm exactly as specified — is `ambiguous`,
-    // not `resolved`, and this test asserts what the code actually does
-    // rather than what the doc predicted. See the round-2 write-up in
-    // task-4-report.md for the full arithmetic.
+  // This is finding 2 as the reviewer actually demonstrated it (fix round
+  // 3 restores it — round 2 covered a DIFFERENT, non-representative
+  // fixture here; see the "genuine tie" test below and task-4-report.md
+  // for how the two diverged). The importer lives in the SAME package as
+  // the real target, which is the ordinary case: a class importing a
+  // neighbour declared right next to it. The two candidates share
+  // 'src/main/java/com/example' with fromPath up through 'example' vs
+  // 'com' — the divergence point — so the ranking discriminates cleanly:
+  // the real file matches one more segment ('example') than the
+  // coincidental one (whose corresponding segment is 'com'), 5 shared
+  // segments vs 4, and wins outright rather than tying.
+  it('resolves to the real file, not a coincidental deeper-directory collision, when the importer sits at the divergence point', () => {
+    const known = new Set([
+      'src/main/java/com/example/Helper.java',
+      'src/main/java/com/com/example/Helper.java',
+      'src/main/java/com/example/Service.java',
+    ])
+    expect(javaResolver.resolve(
+      'src/main/java/com/example/Service.java', 'com.example.Helper', known, '/repo',
+    )).toEqual({ path: 'src/main/java/com/example/Helper.java', confidence: 'resolved' })
+  })
+
+  // A genuine equidistant tie — NOT the com/com finding above. Here the
+  // importer ('other/Service.java') sits OFF the divergence point between
+  // the two candidates entirely: it shares nothing with either candidate's
+  // 'com' vs 'com/com' segment, so both candidates tie on shared leading
+  // segments and the outcome is correctly `ambiguous`, not `resolved`.
+  // The ranking's behaviour depends on WHERE the importer sits relative to
+  // the divergence point — it discriminates when the importer sits there
+  // (the test above) and ties when it does not (this test) — both are the
+  // intended, correct behaviour of the same rule, not a defect in either
+  // direction.
+  it('reports a genuine tie as ambiguous when the importer sits off the divergence point between two equidistant candidates', () => {
     const known = new Set([
       'proj/src/main/java/com/Helper.java',
       'proj/src/main/java/com/com/Helper.java',
