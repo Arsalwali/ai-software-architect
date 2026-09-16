@@ -7,6 +7,15 @@ import { GraphStore } from '../src/store/graph-store.js'
 import { getSymbol } from '../src/tools/symbol.js'
 import { describeModule } from '../src/tools/module.js'
 import { buildFixture } from './fixture-builder.js'
+import type { ParsedFile, SourceSymbol } from '../src/types.js'
+
+function symbolFile(path: string, symbols: SourceSymbol[]): ParsedFile {
+  return { path, lang: 'typescript', contentHash: 'h-' + path, loc: 1, symbols, imports: [], callSites: [], errors: [] }
+}
+
+function exportedFn(name: string): SourceSymbol {
+  return { name, kind: 'function', startLine: 1, endLine: 1, exported: true, signature: null, parentName: null }
+}
 
 let store: GraphStore
 
@@ -33,10 +42,33 @@ describe('getSymbol', () => {
     expect(r.matches[0].calleeCount).toBe(0)
   })
 
-  it('returns every match when a name is not unique, rather than guessing', () => {
-    const r = getSymbol(store, { name: 'notify', limit: 10 })
-    expect(r.matches.length).toBeGreaterThanOrEqual(1)
+  it('returns every match when a name is genuinely duplicated, rather than guessing', () => {
+    // The shared fixture's `notify` has exactly one definition, so a test
+    // built on it can never distinguish "returns every match" from "returns
+    // one match and calls it a day" -- `totalMatches === matches.length` is
+    // an identity that holds either way. Build a local store with a name
+    // defined twice so the assertion can actually fail a regression.
+    const s = GraphStore.open(':memory:')
+    s.insertParsedFiles([
+      symbolFile('a.ts', [exportedFn('dupSymbol')]),
+      symbolFile('b.ts', [exportedFn('dupSymbol')]),
+    ])
+    const r = getSymbol(s, { name: 'dupSymbol', limit: 10 })
+    expect(r.matches.length).toBeGreaterThan(1)
     expect(r.totalMatches).toBe(r.matches.length)
+    expect(r.matches.map(m => m.path).sort()).toEqual(['a.ts', 'b.ts'])
+    s.close()
+  })
+
+  it('truncates loudly with the true total when matches exceed the limit', () => {
+    const s = GraphStore.open(':memory:')
+    const files = Array.from({ length: 5 }, (_, i) => symbolFile(`dup${i}.ts`, [exportedFn('dup')]))
+    s.insertParsedFiles(files)
+    const r = getSymbol(s, { name: 'dup', limit: 2 })
+    expect(r.matches).toHaveLength(2)
+    expect(r.totalMatches).toBe(5)
+    expect(r.truncated).toEqual({ returned: 2, total: 5 })
+    s.close()
   })
 
   it('explains an unknown symbol rather than returning an empty success', () => {
@@ -85,5 +117,35 @@ describe('describeModule', () => {
     const r = describeModule(store, { path: 'src/nowhere', limit: 50 })
     expect(r.files).toEqual([])
     expect(r.note).toMatch(/no indexed files/i)
+  })
+
+  it('names its sub-modules and warns that they are excluded, when a directory has them', () => {
+    // "src" directly owns helper.ts and index.ts, but src/services is a
+    // separate module in this same bucketing scheme -- describeModule('src')
+    // must not silently look like a complete answer for the whole subtree,
+    // the way get_repo_overview's coarser top-level grouping would suggest.
+    const r = describeModule(store, { path: 'src', limit: 50 })
+    expect(r.files).toEqual(['src/helper.ts', 'src/index.ts'])
+    expect(r.subModules).toContain('src/services')
+    expect(r.note).toBeDefined()
+    expect(r.note).toMatch(/src\/services/)
+  })
+
+  it('reports no note and no sub-modules for a leaf module with no subdirectories', () => {
+    const r = describeModule(store, { path: 'src/services', limit: 50 })
+    expect(r.subModules).toEqual([])
+    expect(r.note).toBeUndefined()
+  })
+
+  it('truncates loudly with the true totals for both files and public surface when capped', () => {
+    const s = GraphStore.open(':memory:')
+    const files = Array.from({ length: 5 }, (_, i) => symbolFile(`mod/f${i}.ts`, [exportedFn(`sym${i}`)]))
+    s.insertParsedFiles(files)
+    const r = describeModule(s, { path: 'mod', limit: 2 })
+    expect(r.files).toHaveLength(2)
+    expect(r.truncatedFiles).toEqual({ returned: 2, total: 5 })
+    expect(r.publicSurface).toHaveLength(2)
+    expect(r.truncatedSurface).toEqual({ returned: 2, total: 5 })
+    s.close()
   })
 })

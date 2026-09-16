@@ -101,6 +101,31 @@ describe('findCycles aggregationArtifact', () => {
     s.close()
   })
 
+  it('does not let a self-importing file falsely flip aggregationArtifact to false', () => {
+    // Same directory-bucketing artifact as above, plus a file that imports
+    // itself (the real-world case is an index file with `import { x } from
+    // '.'`, which `resolveImport` legitimately resolves back to the same
+    // file). A self-edge is not a dependency between two distinct files, so
+    // it must not count as file-level evidence of a real cycle -- if it
+    // did, `aggregationArtifact` would flip to `false` (claiming a real
+    // circular dependency) while the file-scope tool, built on the same
+    // self-edge policy, still reports zero cycles.
+    const s = store(
+      ['root/types.ts', 'root/entry.ts', 'sub/a.ts'],
+      [
+        ['sub/a.ts', 'root/types.ts'],
+        ['root/entry.ts', 'sub/a.ts'],
+        ['root/entry.ts', 'root/entry.ts'],
+      ],
+    )
+    const r = findCycles(s, { scope: 'module', minSize: 2, limit: 10 })
+    expect(r.cycles).toHaveLength(1)
+    expect(r.cycles[0].members).toEqual(['root', 'sub'])
+    expect(r.cycles[0].aggregationArtifact).toBe(true)
+    expect(findCycles(s, { scope: 'file', minSize: 2, limit: 10 }).cycles).toEqual([])
+    s.close()
+  })
+
   it('does not flag a genuine cross-module cycle as an artifact', () => {
     // Module A's file imports module B's file and vice versa: a real
     // file-to-file loop exists, not just a directory-bucketing coincidence.

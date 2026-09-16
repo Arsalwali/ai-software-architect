@@ -84,7 +84,10 @@ the default.
 - `impact_of` — what could break if a symbol changes, as transitive
   references bucketed by evidence.
 - `trace_flow` — forward call-graph walk from an entry point, as a tree
-  annotated with files and module boundaries crossed.
+  annotated with files and module boundaries crossed. `depthLimited` means
+  the walk was cut short by `maxDepth`; `limitReached` means it was cut
+  short instead because the node budget (`limit`) ran out — a separate,
+  equally load-bearing reason the tree may be incomplete.
 
 **Analysis**
 

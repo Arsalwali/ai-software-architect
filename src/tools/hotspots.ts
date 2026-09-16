@@ -1,5 +1,6 @@
 import type { GraphStore } from '../store/graph-store.js'
 import { collectHistory, type CoChangePair } from '../git/history.js'
+import { buildFileAdjacency } from '../graph/module-graph.js'
 import { findCycles } from './cycles.js'
 import { truncate, type Truncation } from './envelope.js'
 
@@ -76,7 +77,6 @@ export function findHotspots(
   const history = collectHistory(repoRoot, { windowDays: options.windowDays })
 
   const idsByPath = store.fileIdsByPath()
-  const pathsById = store.pathsById()
   const symbolsByFile = store.symbolsByFile()
 
   const cycleMembers = new Set<string>()
@@ -84,17 +84,11 @@ export function findHotspots(
     for (const member of cycle.members) cycleMembers.add(member)
   }
 
-  const importTargets = new Map<string, Set<string>>()
+  const importTargets = buildFileAdjacency(store)
   const rows: Hotspot[] = []
 
   for (const [path, fileId] of idsByPath) {
-    const targets = new Set<string>()
-    for (const imp of store.importsForFile(fileId)) {
-      if (imp.resolvedFileId === null) continue
-      const target = pathsById.get(imp.resolvedFileId)
-      if (target !== undefined) targets.add(target)
-    }
-    importTargets.set(path, targets)
+    const targets = importTargets.get(path) ?? new Set<string>()
 
     const file = store.fileRow(path)
     const git = history.byFile.get(path)
@@ -168,6 +162,29 @@ export function findHotspots(
   const { items, truncated } = truncate(rows, options.limit)
   const hiddenCouplingCapped = truncate(hiddenCoupling, options.limit)
 
+  const notes: string[] = []
+  if (!history.available) {
+    notes.push(
+      `${history.reason ?? 'Git history unavailable.'} Ranking is structural only — size, ` +
+      `fan-in/out and cycle membership — with no churn signal, so treat it as incomplete ` +
+      `rather than as a debt ranking.`,
+    )
+  }
+  // `loc` was persisted as 0 for every file before this plan's schema
+  // change, and an existing index does not get the new value until it is
+  // fully rebuilt (incremental reindex never re-parses an unchanged file).
+  // A zeroed `loc` silently drops the size half of the structural signal
+  // out of every score, which changes the ranking and can knock genuinely
+  // large files out of the top results entirely -- so this must be labelled
+  // rather than left to look like an ordinary, complete ranking.
+  if (rows.length > 0 && rows.every(r => r.loc === 0)) {
+    notes.push(
+      'Every indexed file reports 0 lines of code, so the size half of the structural signal ' +
+      'is unavailable -- this index predates line-count collection. Run "arch index --full" ' +
+      'to rebuild it and restore accurate rankings.',
+    )
+  }
+
   return {
     hotspots: items,
     totalFiles: rows.length,
@@ -177,9 +194,7 @@ export function findHotspots(
     skippedLargeCommits: history.skippedLargeCommits,
     hiddenCoupling: hiddenCouplingCapped.items,
     totalHiddenCoupling: hiddenCoupling.length,
-    note: history.available
-      ? undefined
-      : `${history.reason ?? 'Git history unavailable.'} Ranking is structural only — size, fan-in/out and cycle membership — with no churn signal, so treat it as incomplete rather than as a debt ranking.`,
+    note: notes.length > 0 ? notes.join(' ') : undefined,
     truncated,
     truncatedHiddenCoupling: hiddenCouplingCapped.truncated,
   }

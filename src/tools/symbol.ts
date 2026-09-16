@@ -1,5 +1,5 @@
 import type { GraphStore } from '../store/graph-store.js'
-import { escapeLikeWildcards, truncate, type Truncation } from './envelope.js'
+import { escapeLikeWildcards, type Truncation } from './envelope.js'
 
 export interface SymbolOptions {
   name: string
@@ -35,7 +35,11 @@ export function getSymbol(store: GraphStore, options: SymbolOptions): SymbolResu
     pathPrefix: options.file === undefined ? undefined : escapeLikeWildcards(options.file),
   }
   const total = store.countSymbols(filter)
-  const hits = store.findSymbols({ ...filter, limit: Math.max(total, 1) })
+  // Fetch only `limit` rows -- `total` above already supplies the honest
+  // count from an independent query, so fetching every match just to
+  // discard all but `limit` of them would buy nothing but N-1 wasted
+  // caller/callee edge queries per discarded row.
+  const hits = store.findSymbols({ ...filter, limit: options.limit })
 
   if (hits.length === 0) {
     return {
@@ -60,6 +64,7 @@ export function getSymbol(store: GraphStore, options: SymbolOptions): SymbolResu
     calleeCount: store.edgesFromSymbol(hit.id).length,
   }))
 
-  const { items, truncated } = truncate(matches, options.limit)
-  return { name: options.name, matches: items, totalMatches: matches.length, truncated }
+  const truncated: Truncation | undefined =
+    total > options.limit ? { returned: matches.length, total } : undefined
+  return { name: options.name, matches, totalMatches: total, truncated }
 }

@@ -23,6 +23,15 @@ export interface ExportedSymbol {
 export interface ModuleResult {
   module: string
   files: string[]
+  /**
+   * Paths of modules nested under this one (i.e. deeper directories whose
+   * files are NOT included in `files`). `describe_module` buckets by the
+   * exact directory named in `path`, unlike `get_repo_overview`'s coarse
+   * top-level grouping -- so a directory with sub-directories will always
+   * have files this response does not cover. Query one of these paths to
+   * see them.
+   */
+  subModules: string[]
   publicSurface: ExportedSymbol[]
   dependencies: ModuleNeighbour[]
   dependents: ModuleNeighbour[]
@@ -44,10 +53,22 @@ export function describeModule(store: GraphStore, options: ModuleOptions): Modul
   const graph = buildModuleGraph(store)
 
   const files = (graph.filesByModule.get(target) ?? []).slice().sort()
+
+  // Modules nested under `target`: `describe_module` buckets by the EXACT
+  // directory named in `path` (moduleOf), so a file two directories down
+  // belongs to its own, deeper module and is never in `files` above. Every
+  // other module the graph knows about is a sub-module of `target` when its
+  // path is nested inside it -- for `target === '.'` (the repo root) that
+  // is every other module, since every module is a directory under the root.
+  const subModules = graph.modules
+    .filter(m => m !== target && (target === '.' || m.startsWith(`${target}/`)))
+    .sort()
+
   if (files.length === 0) {
     return {
       module: target,
       files: [],
+      subModules,
       publicSurface: [],
       dependencies: [],
       dependents: [],
@@ -85,15 +106,30 @@ export function describeModule(store: GraphStore, options: ModuleOptions): Modul
   const fileSlice = truncate(files, options.limit)
   const surfaceSlice = truncate(publicSurface, options.limit)
 
+  // How many files live in a sub-module and are therefore NOT among `files`
+  // above, even though `files` came back non-empty and looks like a
+  // complete answer. Computed from the un-truncated `subModules` list so it
+  // stays correct regardless of `limit`.
+  const additionalFiles = subModules.reduce(
+    (sum, m) => sum + (graph.filesByModule.get(m)?.length ?? 0), 0,
+  )
+
   return {
     module: target,
     files: fileSlice.items,
+    subModules,
     publicSurface: surfaceSlice.items,
     dependencies,
     dependents,
     coupling,
     summary: null,
     summaryUnavailableReason: SUMMARY_UNAVAILABLE,
+    note: additionalFiles > 0
+      ? `This response covers only the ${files.length} file(s) directly inside "${target}", not ` +
+        `its sub-directories. ${additionalFiles} more file(s) live in ${subModules.length} ` +
+        `sub-module(s) not included here: ${subModules.join(', ')}. Call describe_module on one ` +
+        `of those paths to see them.`
+      : undefined,
     truncatedFiles: fileSlice.truncated,
     truncatedSurface: surfaceSlice.truncated,
   }

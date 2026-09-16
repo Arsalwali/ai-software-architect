@@ -4,7 +4,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Confidence, EdgeKind, ParsedFile } from '../types.js'
 
-export const SCHEMA_VERSION = 1
+// Bumped to 2: `files.loc` used to be persisted as 0 for every file. An
+// index built before that fix has a real `loc` column (so the version guard
+// never tripped on its own) but every value in it is wrong, and incremental
+// reindex does not re-parse an unchanged file to correct it. That silently
+// dropped the size half of `find_hotspots`'s structural signal and could
+// knock genuinely large files out of the top results entirely. Bumping the
+// version forces a full rebuild via the existing refuse-to-serve machinery.
+export const SCHEMA_VERSION = 2
 
 const here = dirname(fileURLToPath(import.meta.url))
 

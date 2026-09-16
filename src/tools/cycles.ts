@@ -1,5 +1,5 @@
 import type { GraphStore } from '../store/graph-store.js'
-import { buildModuleGraph, moduleOf, type ModuleGraph } from '../graph/module-graph.js'
+import { buildModuleGraph, buildFileAdjacency, moduleOf, type ModuleGraph } from '../graph/module-graph.js'
 import { stronglyConnectedComponents } from '../graph/algorithms.js'
 import { truncate, type Truncation } from './envelope.js'
 
@@ -119,19 +119,7 @@ function moduleLevel(graph: ModuleGraph) {
 }
 
 function fileLevel(store: GraphStore) {
-  const idsByPath = store.fileIdsByPath()
-  const pathsById = store.pathsById()
-  const adjacency = new Map<string, Set<string>>()
-
-  for (const [path, fileId] of idsByPath) {
-    const targets = new Set<string>()
-    for (const imp of store.importsForFile(fileId)) {
-      if (imp.resolvedFileId === null) continue
-      const target = pathsById.get(imp.resolvedFileId)
-      if (target !== undefined && target !== path) targets.add(target)
-    }
-    adjacency.set(path, targets)
-  }
+  const adjacency = buildFileAdjacency(store)
 
   return {
     nodes: [...adjacency.keys()].sort(),
@@ -193,7 +181,6 @@ function hopsFor(store: GraphStore, graph: ModuleGraph, members: string[], insid
 function isAggregationArtifact(store: GraphStore, members: string[]): boolean {
   const allowedModules = new Set(members)
   const idsByPath = store.fileIdsByPath()
-  const pathsById = store.pathsById()
 
   const nodes: string[] = []
   for (const path of idsByPath.keys()) {
@@ -201,17 +188,7 @@ function isAggregationArtifact(store: GraphStore, members: string[]): boolean {
   }
   const nodeSet = new Set(nodes)
 
-  const adjacency = new Map<string, Set<string>>()
-  for (const path of nodes) {
-    const targets = new Set<string>()
-    for (const imp of store.importsForFile(idsByPath.get(path)!)) {
-      if (imp.resolvedFileId === null) continue
-      const target = pathsById.get(imp.resolvedFileId)
-      if (target !== undefined && nodeSet.has(target)) targets.add(target)
-    }
-    adjacency.set(path, targets)
-  }
-
+  const adjacency = buildFileAdjacency(store, nodeSet)
   const successors = (p: string): Iterable<string> => adjacency.get(p) ?? new Set<string>()
   const components = stronglyConnectedComponents(nodes.sort(), successors)
 

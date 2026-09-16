@@ -226,7 +226,9 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
       'Forward call-graph walk from an entry point, as a tree annotated with files crossed ' +
       'and module boundaries crossed. `repeated: true` marks a node already expanded ' +
       'elsewhere in the tree (its own expansion is not repeated); `depthLimited` marks a walk ' +
-      'cut short by `maxDepth`.',
+      'cut short by `maxDepth`; `limitReached` marks a walk cut short because the node budget ' +
+      '(`limit`) ran out instead — a distinct reason for an incomplete tree, since it can trip ' +
+      'even at a depth well inside `maxDepth`.',
     inputSchema: {
       repo: repoArg,
       entry: z.string().min(1).describe('Symbol name to start the walk from.'),

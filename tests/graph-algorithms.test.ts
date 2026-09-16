@@ -135,9 +135,26 @@ describe('buildModuleGraph', () => {
     store.close()
   })
 
-  it('creates no edge for an unresolved import', () => {
-    const store = seed()
-    expect(buildModuleGraph(store).out.get('app')!.has('react')).toBe(false)
+  it('contributes no outgoing module edges for a file whose only import is unresolved', () => {
+    // Asserting `.has('react')` is false (the old version of this test)
+    // is vacuous: `moduleOf` builds every key in `out` from a resolved
+    // TARGET path, so a raw specifier like "react" could never appear as a
+    // key regardless of whether the unresolved-import guard exists at all.
+    // The guard actually controls something else: whether a file whose
+    // only import is unresolved gets any outgoing edge at all. Assert that
+    // directly, on a file with no other import to accidentally satisfy it.
+    const store = GraphStore.open(':memory:')
+    const file = (path: string): ParsedFile => ({
+      path, lang: 'typescript', contentHash: 'h-' + path, loc: 1,
+      symbols: [], imports: [], callSites: [], errors: [],
+    })
+    store.insertParsedFiles([file('solo/a.ts')])
+    const ids = store.fileIdsByPath()
+    store.insertImports([
+      { fileId: ids.get('solo/a.ts')!, rawSpecifier: 'react', resolvedFileId: null, kind: 'static', confidence: 'unresolved', line: 1 },
+    ])
+    const graph = buildModuleGraph(store)
+    expect(graph.out.get('solo')).toEqual(new Map())
     store.close()
   })
 

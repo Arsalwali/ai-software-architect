@@ -164,6 +164,37 @@ describe('findHotspots with git available', () => {
     expect(dToE!.noNearbyImportPath).toBe(true)
     store.close()
   })
+  it('still flags a pair three import-hops apart as hidden coupling -- the bound is two hops, not full reachability', async () => {
+    // a -> b -> c -> d: a three-hop chain. The hidden-coupling check is
+    // deliberately bounded at two hops (see the doc comment on
+    // `noNearbyImportPath`); a and d are NOT within that bound, so their
+    // co-change must still be reported. Widening the check to three hops
+    // (or to full reachability) would wrongly suppress this pair.
+    const root = mkdtempSync(join(tmpdir(), 'arch-threehop-'))
+    const run = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+    run(['init', '-q'])
+    run(['config', 'user.email', 'a@example.com'])
+    run(['config', 'user.name', 'A'])
+
+    write(root, 'src/a.ts', 'import { b } from "./b.js";\nexport function a(): number { return b(); }\n')
+    write(root, 'src/b.ts', 'import { c } from "./c.js";\nexport function b(): number { return c(); }\n')
+    write(root, 'src/c.ts', 'import { d } from "./d.js";\nexport function c(): number { return d(); }\n')
+    write(root, 'src/d.ts', 'export function d(): number { return 1; }\n')
+    run(['add', '-A']); run(['commit', '-q', '-m', 'feat: initial'])
+
+    for (let i = 0; i < 3; i++) {
+      write(root, 'src/a.ts', `import { b } from "./b.js";\nexport function a(): number { return b() + ${i}; }\n`)
+      write(root, 'src/d.ts', `export function d(): number { return ${i}; }\n`)
+      run(['add', '-A']); run(['commit', '-q', '-m', `feat: change ${i}`])
+    }
+
+    const store = await indexed(root)
+    const r = findHotspots(store, root, { limit: 10 })
+    const aToD = r.hiddenCoupling.find(p => p.a === 'src/a.ts' && p.b === 'src/d.ts')
+    expect(aToD).toBeDefined()
+    expect(aToD!.noNearbyImportPath).toBe(true)
+    store.close()
+  })
 })
 
 describe('findHotspots with a git repo but an empty window', () => {
