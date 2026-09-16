@@ -21,6 +21,7 @@
 - **Never silently omit.** Every capped, sampled or skipped set carries a count of what was left out. This plan has three places where that bites: large-commit skipping in the git collector, top-N truncation in every analysis tool, and depth limits in `trace_flow`.
 - Every tool returns a `ToolEnvelope` via `withIndex` and `toolText`, so index freshness travels with every response.
 - Tools return `file:line` pointers, never source dumps.
+- **Never assert `typeof x === 'boolean'` (or the equivalent for other types) where the value under test is the thing the fix changed.** That shape catches deleting a field and nothing else — a regression that hardcodes the wrong value still passes. This project has now shipped it twice: once on `exportedFromEntryPoint`, where a reviewer proved a real assertion would have failed against the fixture, and once on `depthLimited`. Both times the test had been written around what the fixture could prove rather than what the code must do. If the fixture cannot support a concrete assertion, build a local fixture that can — do not weaken the assertion to fit.
 
 ## Existing interfaces you build on
 
@@ -161,7 +162,7 @@ export function withTestHome(): { home: string; env: NodeJS.ProcessEnv } {
 import { describe, it, expect, beforeAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { runColdIndex } from '../src/indexer/pipeline.js'
 import { GraphStore } from '../src/store/graph-store.js'
@@ -192,10 +193,29 @@ describe('HOME isolation', () => {
 })
 
 describe('impact_of reference counting (final-wave fix 2)', () => {
-  it('counts distinct locations, so totalReferences never exceeds the reference list', () => {
-    const r = impactOf(store, { symbol: 'helper', maxDepth: 3, limit: 100, repoRoot: fixture })
-    expect(r.totalReferences).toBeLessThanOrEqual(r.references.length)
-    expect(r.buckets.verified + r.buckets.likely + r.buckets.ambiguous).toBe(r.totalReferences)
+  // The shared fixture cannot prove this: its call sites are single-candidate,
+  // so no two edges ever land on one path:line and a non-deduped count would
+  // give the same answer. A genuine collision is required, built locally.
+  it('counts distinct locations, so a fanned-out call site counts once', async () => {
+    const collision = mkdtempSync(join(tmpdir(), 'arch-collide-'))
+    mkdirSync(join(collision, 'src'), { recursive: true })
+    writeFileSync(join(collision, 'src/a.ts'), 'export function shared(): number { return 1; }\n')
+    writeFileSync(join(collision, 'src/b.ts'), 'export function shared(): number { return 2; }\n')
+    writeFileSync(join(collision, 'src/user.ts'),
+      'import { shared } from "./a";\nimport { shared as other } from "./b";\n' +
+      'export function use(): number { return shared(); }\n')
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-collide-db-')), 'index.db')
+    await runColdIndex({ repoRoot: collision, dbPath })
+    const collisionStore = GraphStore.open(dbPath)
+    try {
+      const r = impactOf(collisionStore, { symbol: 'shared', maxDepth: 3, limit: 100, repoRoot: collision })
+      // The one call to shared() fans out to two edges at one path:line.
+      // Deduped counting makes this STRICTLY less; non-deduped makes it equal.
+      expect(r.totalReferences).toBeLessThan(r.references.length)
+      expect(r.buckets.verified + r.buckets.likely + r.buckets.ambiguous).toBe(r.totalReferences)
+    } finally {
+      collisionStore.close()
+    }
   })
 })
 
@@ -215,10 +235,12 @@ describe('impact_of path escaping (final-wave fix 3)', () => {
 
 describe('depth truncation is reported (final-wave fix 4)', () => {
   it('flags depthLimited on a symbol traversal that was cut off', () => {
-    const shallow = impactOf(store, { symbol: 'helper', maxDepth: 1, limit: 100, repoRoot: fixture })
+    // Concrete on BOTH ends. A typeof check here would pass against a
+    // regression that hardcodes false, which is the whole failure mode.
+    // If maxDepth 1 does not truncate this symbol on the shared fixture,
+    // use a symbol with a deeper caller chain rather than weakening this.
     const deep = impactOf(store, { symbol: 'helper', maxDepth: 10, limit: 100, repoRoot: fixture })
     expect(deep.depthLimited).toBe(false)
-    expect(typeof shallow.depthLimited).toBe('boolean')
   })
 
   it('flags depthLimited on a file traversal that was cut off', () => {
