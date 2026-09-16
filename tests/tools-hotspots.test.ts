@@ -60,7 +60,9 @@ describe('findHotspots with git available', () => {
     expect(top.symbols).toBeGreaterThan(0)
     expect(top.commits).toBeGreaterThan(1)
     expect(top.bugFixCommits).toBeGreaterThan(0)
-    expect(typeof top.inCycle).toBe('boolean')
+    // The churn fixture has no import cycle, so this is knowably false --
+    // asserting the bare type would pass even if the field were always true.
+    expect(top.inCycle).toBe(false)
     expect(top.score).toBeGreaterThan(0)
     store.close()
   })
@@ -93,6 +95,73 @@ describe('findHotspots with git available', () => {
     const r = findHotspots(store, root, { limit: 1 })
     expect(r.hotspots).toHaveLength(1)
     expect(r.truncated!.total).toBeGreaterThan(1)
+    store.close()
+  })
+
+  it('caps hiddenCoupling loudly with the true total, not silently', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'arch-hidden-cap-'))
+    const run = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+    run(['init', '-q'])
+    run(['config', 'user.email', 'a@example.com'])
+    run(['config', 'user.name', 'A'])
+
+    // Three disjoint, unimported pairs that each co-change enough to qualify
+    // as hidden coupling -- more pairs than the limit below allows through.
+    const pairs = [['p1a', 'p1b'], ['p2a', 'p2b'], ['p3a', 'p3b']]
+    for (const [x, y] of pairs) {
+      write(root, `src/${x}.ts`, `export function ${x}(): number { return 0; }\n`)
+      write(root, `src/${y}.ts`, `export function ${y}(): number { return 0; }\n`)
+    }
+    run(['add', '-A']); run(['commit', '-q', '-m', 'feat: initial'])
+    for (let i = 0; i < 3; i++) {
+      for (const [x, y] of pairs) {
+        write(root, `src/${x}.ts`, `export function ${x}(): number { return 0; } // rev ${i}\n`)
+        write(root, `src/${y}.ts`, `export function ${y}(): number { return 0; } // rev ${i}\n`)
+      }
+      run(['add', '-A']); run(['commit', '-q', '-m', `feat: change ${i}`])
+    }
+
+    const store = await indexed(root)
+    const r = findHotspots(store, root, { limit: 1 })
+    expect(r.totalHiddenCoupling).toBeGreaterThan(1)
+    expect(r.hiddenCoupling.length).toBeLessThan(r.totalHiddenCoupling)
+    expect(r.truncatedHiddenCoupling).toBeDefined()
+    expect(r.truncatedHiddenCoupling!.total).toBe(r.totalHiddenCoupling)
+    store.close()
+  })
+
+  it('does not flag a pair reachable in two hops as hidden coupling, but still flags a genuinely disconnected pair', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'arch-twohop-'))
+    const run = (args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' })
+    run(['init', '-q'])
+    run(['config', 'user.email', 'a@example.com'])
+    run(['config', 'user.name', 'A'])
+
+    // a -> b -> c: a and c have a two-hop import path, so co-changing
+    // together is not "hidden" -- it's explained by the shared chain.
+    write(root, 'src/a.ts', 'import { b } from "./b.js";\nexport function a(): number { return b(); }\n')
+    write(root, 'src/b.ts', 'import { c } from "./c.js";\nexport function b(): number { return c(); }\n')
+    write(root, 'src/c.ts', 'export function c(): number { return 1; }\n')
+    // d and e import nothing and are not imported -- genuinely disconnected.
+    write(root, 'src/d.ts', 'export function d(): number { return 1; }\n')
+    write(root, 'src/e.ts', 'export function e(): number { return 2; }\n')
+    run(['add', '-A']); run(['commit', '-q', '-m', 'feat: initial'])
+
+    for (let i = 0; i < 3; i++) {
+      write(root, 'src/a.ts', `import { b } from "./b.js";\nexport function a(): number { return b() + ${i}; }\n`)
+      write(root, 'src/c.ts', `export function c(): number { return ${i}; }\n`)
+      write(root, 'src/d.ts', `export function d(): number { return ${i}; }\n`)
+      write(root, 'src/e.ts', `export function e(): number { return ${i}; }\n`)
+      run(['add', '-A']); run(['commit', '-q', '-m', `feat: change ${i}`])
+    }
+
+    const store = await indexed(root)
+    const r = findHotspots(store, root, { limit: 10 })
+    const aToC = r.hiddenCoupling.find(p => p.a === 'src/a.ts' && p.b === 'src/c.ts')
+    const dToE = r.hiddenCoupling.find(p => p.a === 'src/d.ts' && p.b === 'src/e.ts')
+    expect(aToC).toBeUndefined()
+    expect(dToE).toBeDefined()
+    expect(dToE!.noNearbyImportPath).toBe(true)
     store.close()
   })
 })

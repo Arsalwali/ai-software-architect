@@ -24,8 +24,21 @@ export interface Hotspot {
 }
 
 export interface HiddenCoupling extends CoChangePair {
-  /** True when neither file imports the other, despite changing together. */
-  noImportEdge: boolean
+  /**
+   * True when no direct import edge and no two-hop import path (A -> X -> B
+   * or B -> X -> A) was found between the pair, despite changing together.
+   * This is deliberately NOT full reachability: in a connected codebase
+   * almost every file is transitively reachable from almost every other
+   * through some shared utility, so "no path anywhere" would suppress
+   * nearly all signal. It is also deliberately not direct-edge-only: a hub
+   * file (e.g. a root component importing many things) is transitively
+   * reachable from most of its own descendants by construction, so a
+   * direct-edge-only check would systematically flag a hub against its own
+   * descendants as "hidden" coupling that isn't hidden at all. The bounded
+   * two-hop check is a middle ground: it catches the common
+   * "shared-utility" and "sibling-via-parent" cases without either extreme.
+   */
+  noNearbyImportPath: boolean
 }
 
 export interface HotspotResult {
@@ -34,10 +47,14 @@ export interface HotspotResult {
   gitAvailable: boolean
   windowDays: number
   skippedLargeCommits: number
-  /** Pairs that change together but have no import relationship. */
+  /** Pairs that change together but have no nearby import relationship. */
   hiddenCoupling: HiddenCoupling[]
+  /** True count of qualifying pairs before `hiddenCoupling` was capped. */
+  totalHiddenCoupling: number
   note?: string
   truncated?: Truncation
+  /** Present only when `hiddenCoupling` was capped by `options.limit`. */
+  truncatedHiddenCoupling?: Truncation
 }
 
 const HIDDEN_COUPLING_MIN_COMMITS = 3
@@ -114,14 +131,33 @@ export function findHotspots(
   for (const pair of history.coChanges) {
     if (pair.commits < HIDDEN_COUPLING_MIN_COMMITS) continue
     if (!idsByPath.has(pair.a) || !idsByPath.has(pair.b)) continue
-    const linked =
-      (importTargets.get(pair.a)?.has(pair.b) ?? false) ||
-      (importTargets.get(pair.b)?.has(pair.a) ?? false)
-    if (linked) continue
-    hiddenCoupling.push({ ...pair, noImportEdge: true })
+
+    const aTargets = importTargets.get(pair.a)
+    const bTargets = importTargets.get(pair.b)
+
+    const direct = (aTargets?.has(pair.b) ?? false) || (bTargets?.has(pair.a) ?? false)
+    if (direct) continue
+
+    // Bounded two-hop check: A -> X -> B, or B -> X -> A. Not full
+    // reachability -- see the doc comment on `noNearbyImportPath`.
+    let twoHop = false
+    if (aTargets) {
+      for (const x of aTargets) {
+        if (importTargets.get(x)?.has(pair.b)) { twoHop = true; break }
+      }
+    }
+    if (!twoHop && bTargets) {
+      for (const x of bTargets) {
+        if (importTargets.get(x)?.has(pair.a)) { twoHop = true; break }
+      }
+    }
+    if (twoHop) continue
+
+    hiddenCoupling.push({ ...pair, noNearbyImportPath: true })
   }
 
   const { items, truncated } = truncate(rows, options.limit)
+  const hiddenCouplingCapped = truncate(hiddenCoupling, options.limit)
 
   return {
     hotspots: items,
@@ -129,10 +165,12 @@ export function findHotspots(
     gitAvailable: history.available,
     windowDays: history.windowDays,
     skippedLargeCommits: history.skippedLargeCommits,
-    hiddenCoupling: hiddenCoupling.slice(0, options.limit),
+    hiddenCoupling: hiddenCouplingCapped.items,
+    totalHiddenCoupling: hiddenCoupling.length,
     note: history.available
       ? undefined
       : `${history.reason ?? 'Git history unavailable.'} Ranking is structural only — size, fan-in/out and cycle membership — with no churn signal, so treat it as incomplete rather than as a debt ranking.`,
     truncated,
+    truncatedHiddenCoupling: hiddenCouplingCapped.truncated,
   }
 }
