@@ -51,6 +51,7 @@ export const LANGUAGES: LanguageDef[] = [
   def('javascript', 'typescript', 'typescript', ['.js', '.mjs', '.cjs'], 'javascript'),
   def('jsx', 'tsx', 'typescript', ['.jsx'], 'javascript'),
   def('python', 'python', 'python', ['.py'], 'python'),
+  def('go', 'go', 'go', ['.go'], 'go'),
 ]
 
 const byExtension = new Map<string, LanguageDef>()

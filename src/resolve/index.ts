@@ -2,6 +2,7 @@ import { languageForPath } from '../parser/languages.js'
 import type { Confidence } from '../types.js'
 import { javascriptResolver } from './javascript.js'
 import { pythonResolver } from './python.js'
+import { goResolver } from './go.js'
 
 export interface ResolvedImport {
   path: string | null
@@ -30,6 +31,7 @@ export interface ImportResolver {
 const RESOLVERS = new Map<string, ImportResolver>([
   [javascriptResolver.id, javascriptResolver],
   [pythonResolver.id, pythonResolver],
+  [goResolver.id, goResolver],
 ])
 
 /**

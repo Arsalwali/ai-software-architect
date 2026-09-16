@@ -100,7 +100,7 @@ function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[
     let parentName: string | null = null
 
     if (kind === 'method') {
-      parentName = enclosingClassName(node)
+      parentName = langId === 'go' ? goReceiverTypeName(node) : enclosingClassName(node)
     } else if (kind === 'function' && methodContainers) {
       const container = enclosingContainerOfType(node, methodContainers)
       if (container) {
@@ -114,7 +114,7 @@ function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[
       kind,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
-      exported: isExported(node, langId),
+      exported: isExported(node, langId, nameCapture.node.text),
       signature: signatureOf(node),
       parentName,
     })
@@ -147,9 +147,18 @@ function enclosingContainerOfType(node: Node, types: string[]): Node | null {
  * rule there is simply "is this definition's parent the module itself", the
  * same test that already keeps a class's methods from being misclassified
  * as exported.
+ *
+ * Go has no export keyword OR modifier either, but unlike Python the rule
+ * is not "everything is importable" — it is purely capitalisation. An
+ * identifier is part of a package's public API if and only if its first
+ * character is uppercase (`Help` is exported, `help` is not). That check
+ * has to run against the symbol's NAME, not this node's source text: for a
+ * `function_declaration` the text starts with the `func` keyword, whose
+ * first letter is lowercase regardless of the function's own name.
  */
-function isExported(node: Node, langId: string): boolean {
+function isExported(node: Node, langId: string, name: string): boolean {
   if (langId === 'python') return node.parent?.type === 'module'
+  if (langId === 'go') return isGoExportedName(name)
 
   let current: Node | null = node
   for (let depth = 0; current && depth < 3; depth++) {
@@ -157,6 +166,17 @@ function isExported(node: Node, langId: string): boolean {
     current = current.parent
   }
   return false
+}
+
+/**
+ * Go's capitalisation export rule. `charAt(0)` on an empty string returns
+ * `''`, and comparing `''.toUpperCase() === ''.toLowerCase()` is true, so an
+ * empty or non-letter first character (digit, underscore, symbol) correctly
+ * falls through to `false` without throwing.
+ */
+function isGoExportedName(name: string): boolean {
+  const first = name.charAt(0)
+  return first !== '' && first === first.toUpperCase() && first !== first.toLowerCase()
 }
 
 function signatureOf(node: Node): string | null {
@@ -177,6 +197,23 @@ function enclosingClassName(node: Node): string | null {
   return null
 }
 
+/**
+ * Go has no class nesting at all: a `method_declaration` is a top-level
+ * sibling of everything else, and the type it belongs to is named by its
+ * `receiver` field (`func (s *Service) Place() int`) rather than by an
+ * ancestor node — so this reads a field off `node` itself, unlike
+ * `enclosingClassName`'s ancestor walk. The receiver's declared type is
+ * either a bare `type_identifier` (value receiver) or a `pointer_type`
+ * wrapping one (pointer receiver); both name the same type.
+ */
+function goReceiverTypeName(node: Node): string | null {
+  const receiver = node.childForFieldName('receiver')
+  const declaration = receiver?.namedChild(0) ?? null
+  const type = declaration?.childForFieldName('type') ?? null
+  if (!type) return null
+  return type.type === 'pointer_type' ? type.namedChild(0)?.text ?? null : type.text
+}
+
 /** Names that are import mechanisms, not real call targets. */
 const IMPORT_MECHANISMS = new Set(['require', 'import'])
 
@@ -184,6 +221,11 @@ const ENCLOSING_SYMBOL_NODES = new Set([
   'function_declaration', 'method_definition', 'arrow_function', 'function_expression',
   // Python has one node for both a function and a method.
   'function_definition',
+  // Go's method_declaration is captured explicitly as def.method (unlike
+  // Python, it needs no METHOD_CONTAINER_TYPES entry) but is still a
+  // distinct node type from function_declaration, so it needs its own
+  // entry here too; it shapes its `name` field identically.
+  'method_declaration',
 ])
 
 function extractImports(query: Query, root: Node): RawImport[] {
