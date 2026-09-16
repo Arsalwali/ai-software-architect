@@ -129,15 +129,38 @@ function sharedLeadingSegments(a: string, b: string): number {
  * because nothing upstream of this resolver parses that far ahead of
  * time. Two files in different modules can each legitimately claim the
  * same FQN, and a coincidental directory layout can make an unrelated
- * file look like an equally good match (see task-4-fixes.md finding 2 and
- * task-4-fixes-round2.md: when a "coincidental deeper" file's path is
- * exactly the real file's directory plus one extra segment before its own
- * filename, it necessarily TIES with the real file on shared-leading-
- * segments for every possible `fromPath` — it can never score strictly
- * lower, only tie or win — so that shape of collision always reports
- * `ambiguous`, not a silent pick either way). Where this resolver can't
- * tell candidates apart, it reports `ambiguous` rather than guessing —
- * failing loudly instead of silently returning a confident wrong answer.
+ * file look like an equally good match (see task-4-fixes.md finding 2).
+ * When a "coincidental deeper" file's path is exactly the real file's
+ * directory plus one extra segment before its own filename, the two
+ * candidates diverge from `fromPath` at that one extra segment, and which
+ * one shares more leading segments depends on what `fromPath` itself has
+ * at that exact position: when the importer sits at the divergence point
+ * (the ordinary case — importing a neighbour in one's own package), the
+ * ranking discriminates correctly and the real file wins outright; when
+ * the importer sits elsewhere, both candidates tie and the result is
+ * `ambiguous` (task-4-fixes-round2.md and task-4-fixes-round3.md). Both
+ * outcomes are intended, not a defect in either direction — the ranking
+ * is not "can only tie or lose," it genuinely discriminates when the
+ * importer's own path carries the deciding information.
+ *
+ * A narrower, still-open residual (task-4-fixes-round4.md, item 3, ruled
+ * explicitly OUT of scope for this task): the ranking can still return
+ * `resolved` on a WRONG file when a decoy sits under a bogus "source
+ * root" that happens to be nearer the importer than the real target — for
+ * example a checked-in shaded/vendored copy
+ * (`…/org/vendor/shaded/com/example/Helper.java`) or a package-shaped
+ * test-fixture directory. `sourceRootsFrom` cannot tell a genuine source
+ * root from a coincidental directory that merely looks like one, because
+ * it works from indexed paths alone. The real fix is to validate a
+ * candidate root against that file's own `package` declaration, which
+ * needs per-file package metadata plumbed through the resolver seam and
+ * the parse pipeline — a change bigger than this resolver, and its own
+ * task, not a patch here. The exposure is narrow in practice (shading
+ * normally happens to built jars, not to checked-in sources) and the
+ * blast radius is one mis-pointed edge, not a systemic failure; this
+ * resolver still fails loudly via `ambiguous` whenever it genuinely
+ * cannot tell candidates apart, and only fails silently in this specific,
+ * narrower decoy shape.
  *
  * A wildcard import (`import com.example.*;`) names a package, not a
  * class, so it can never identify one file — resolving it would be a

@@ -115,6 +115,52 @@ describe('java parsing', () => {
     const hidden = parser.parse('Outer.java', NESTED_SOURCE).symbols.find(s => s.name === 'hidden')!
     expect(hidden.exported).toBe(false)
   })
+
+  it('does not export a method through a record nested in a sealed interface (fix round 4, item 1)', () => {
+    // `record_declaration` was missing from ENCLOSING_CLASS_TYPES.java, so
+    // the nearest-type walk skipped straight past the record and landed on
+    // the enclosing (sealed) interface, wrongly exporting `secret` via the
+    // interface-implicit-public rule. Verified `record_declaration` against
+    // the real grammar (tree-sitter-java.wasm) before relying on it — a
+    // sealed interface with a nested record is idiomatic modern Java.
+    const RECORD_SOURCE =
+      'package com.example;\n\n' +
+      'public sealed interface Shape {\n' +
+      '  record Circle(int r) implements Shape {\n' +
+      '    private int secret() { return 1; }\n' +
+      '  }\n' +
+      '}\n'
+    const secret = parser.parse('Shape.java', RECORD_SOURCE).symbols.find(s => s.name === 'secret')!
+    expect(secret.exported).toBe(false)
+  })
+
+  it('exports a type nested directly in an annotation type, whose members are implicitly public (fix round 4, item 1)', () => {
+    // A method_declaration can never be a direct child of an annotation
+    // type's body in this grammar (an element such as `String value();`
+    // parses as `annotation_type_element_declaration`, not
+    // `method_declaration`, and isn't captured by symbols.scm at all) — so
+    // the record-style "private method wrongly exported" case cannot arise
+    // for an annotation type. What CAN sit directly inside an annotation
+    // type's body, and IS captured, is a nested type declaration (verified
+    // against the real grammar: `class_declaration` parses as a direct
+    // child of `annotation_type_body`). Per JLS 9.6, every member of an
+    // annotation type — including a nested type — is implicitly public,
+    // the same rule already applied to interface members. Before this fix,
+    // `annotation_type_declaration` was missing from
+    // ENCLOSING_CLASS_TYPES.java, so the nearest-type walk skipped past
+    // `Outer` entirely (finding no enclosing type at all, since `Outer` is
+    // top-level) and `Inner` — a package-private class with no modifier of
+    // its own — came back `exported: false`, which is wrong.
+    const ANNOTATION_SOURCE =
+      'package com.example;\n\n' +
+      'public @interface Outer {\n' +
+      '  class Inner {\n' +
+      '    int field;\n' +
+      '  }\n' +
+      '}\n'
+    const inner = parser.parse('Outer.java', ANNOTATION_SOURCE).symbols.find(s => s.name === 'Inner')!
+    expect(inner.exported).toBe(true)
+  })
 })
 
 describe('java produces a real graph', () => {

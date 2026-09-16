@@ -98,7 +98,18 @@ const METHOD_CONTAINER_TYPES: Record<string, string[]> = {
  * Python and Go's `parentName` behaviour is unaffected.
  */
 const ENCLOSING_CLASS_TYPES: Record<string, string[]> = {
-  java: ['class_declaration', 'interface_declaration', 'enum_declaration'],
+  // `record_declaration` and `annotation_type_declaration` verified
+  // against the real grammar (tree-sitter-java.wasm) before relying on
+  // them — this task has already been bitten twice by assumed node names.
+  // Both must be here so the nearest-type WALK doesn't skip past a record
+  // or annotation type and land on some farther ancestor instead (fix
+  // round 4, item 1): `record Circle(...) { private int secret() {} }`
+  // nested in a sealed interface must stop the walk at `Circle`, not
+  // `Shape`, or `secret` gets wrongly exported via the interface rule.
+  java: [
+    'class_declaration', 'interface_declaration', 'enum_declaration',
+    'record_declaration', 'annotation_type_declaration',
+  ],
 }
 const DEFAULT_ENCLOSING_CLASS_TYPES = ['class_declaration']
 
@@ -187,31 +198,48 @@ function isExported(node: Node, langId: string, name: string): boolean {
 /**
  * Java's export rule: a declaration is part of a file's importable surface
  * iff it carries an explicit `public` modifier, OR its NEAREST enclosing
- * type declaration is an interface — interface members are implicitly
- * public regardless of any modifier, and an explicit-`public`-only rule
- * would wrongly mark every interface method `exported: false`, silently
- * producing zero cross-file call edges into any interface (the exact
- * failure this project's Python support hit before its own export rule was
- * corrected).
+ * type declaration is an interface OR an annotation type — members of
+ * both are implicitly public regardless of any modifier (JLS 9.6: an
+ * annotation type is itself a kind of interface, so this is the same rule
+ * applied to both, not two rules). An explicit-`public`-only rule would
+ * wrongly mark every interface/annotation-type member `exported: false`,
+ * silently producing zero cross-file call edges into any interface (the
+ * exact failure this project's Python support hit before its own export
+ * rule was corrected).
+ *
+ * A record is deliberately EXCLUDED from the implicit-public set: unlike
+ * an interface or annotation type, a record behaves like an ordinary
+ * class — its members have their own explicit or default (package-private)
+ * visibility, not an implicit one. `record_declaration` still belongs in
+ * `ENCLOSING_CLASS_TYPES.java` so the WALK below stops there rather than
+ * skipping past it (see that constant's comment), but stopping is not the
+ * same as granting implicit-public status once stopped.
  *
  * "Nearest" matters: `interface Outer { class Inner { private int
  * hidden() {} } }` must NOT export `hidden` just because Outer, several
  * levels up, is an interface. Only `Inner` (a class) governs `hidden`, so
  * the walk stops at the first type declaration it finds rather than
  * continuing to ask whether any ancestor, at any depth, is an interface.
+ * The same reasoning is why a method_declaration can never actually reach
+ * `annotation_type_declaration` as its nearest type in this grammar — an
+ * annotation type's own elements parse as `annotation_type_element_declaration`,
+ * a different node this project does not capture as a symbol at all — but
+ * a nested type declared directly inside an annotation type's body (e.g. a
+ * helper class) DOES reach it as its nearest type, and per JLS 9.6 that
+ * nested type is implicitly public too.
  *
  * `public` is detected by walking the `modifiers` node's own children and
  * testing `child.type === 'public'` — never by substring-matching the
  * modifiers' text, which would false-positive on an annotation such as
  * `@PublicApi`. A declaration with no modifier at all (package-private, or
- * an interface member) has no `modifiers` node as a child at all in this
- * grammar, not an empty one.
+ * an interface/annotation-type member) has no `modifiers` node as a child
+ * at all in this grammar, not an empty one.
  */
 function isJavaExported(node: Node): boolean {
   const modifiers = node.children.find(child => child?.type === 'modifiers') ?? null
   if (modifiers && modifiers.children.some(child => child?.type === 'public')) return true
   const nearestType = enclosingContainerOfType(node, ENCLOSING_CLASS_TYPES.java)
-  return nearestType?.type === 'interface_declaration'
+  return nearestType?.type === 'interface_declaration' || nearestType?.type === 'annotation_type_declaration'
 }
 
 /**
