@@ -51,6 +51,19 @@ export function buildPythonFixture(options: { git?: boolean } = {}): string {
  * no export, and a resolver that filtered same-directory candidates by
  * exported-ness would leave this specific call unresolved. See
  * task-6-fixes.md and `src/indexer/same-package.ts`.
+ *
+ * `multi/aaa.go` and `multi/zzz.go` are a THIRD additive pair, for a
+ * different gap (task-6-fixes-round2.md, Fix 3): `multi` is a Go package
+ * split across two files where the CALLED symbol (`MultiFn`, in `zzz.go`)
+ * does not live in the file that sorts first (`aaa.go`). `goResolver`
+ * (src/resolve/go.ts) resolves an `import "example.com/m/multi"` to only
+ * the first file in the directory by sorted path for the `imports` table's
+ * single `resolvedFileId` -- deliberately unchanged by this fix, since the
+ * import row can only ever record one file. Without a second, later-sorting
+ * file holding the actually-called symbol, a resolver that (bug or fix)
+ * only ever looked at the "resolved" file could never be told apart from
+ * one that correctly considers the whole package directory: `main.go`
+ * calling `multi.MultiFn` is the assertion with teeth for that distinction.
  */
 export const GO_FILES: Record<string, string> = {
   'go.mod': 'module example.com/m\n\ngo 1.22\n',
@@ -60,10 +73,13 @@ export const GO_FILES: Record<string, string> = {
     'type Service struct{ N int }\n\n' +
     'func (s *Service) Place() int {\n\treturn helper.Help(s.N)\n}\n',
   'main.go':
-    'package main\n\nimport (\n\t"fmt"\n\t"example.com/m/service"\n)\n\n' +
-    'func main() {\n\ts := service.Service{N: 2}\n\tfmt.Println(s.Place())\n}\n',
+    'package main\n\nimport (\n\t"fmt"\n\t"example.com/m/service"\n\t"example.com/m/multi"\n)\n\n' +
+    'func main() {\n\ts := service.Service{N: 2}\n\tfmt.Println(s.Place())\n\t' +
+    'fmt.Println(multi.MultiFn(1))\n}\n',
   'single/one.go': 'package single\n\nfunc help(n int) int {\n\treturn n + 1\n}\n',
   'single/two.go': 'package single\n\nfunc Combine(n int) int {\n\treturn help(n)\n}\n',
+  'multi/aaa.go': 'package multi\n\nfunc Unrelated() int {\n\treturn 0\n}\n',
+  'multi/zzz.go': 'package multi\n\nfunc MultiFn(n int) int {\n\treturn n + 1\n}\n',
 }
 
 export function buildGoFixture(options: { git?: boolean } = {}): string {

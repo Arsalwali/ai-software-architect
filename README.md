@@ -171,10 +171,17 @@ edges between files:
   paths relative to the repository root (absolute, e.g. `pkg.service`) and
   relative to the importing file (`from .helper import helper`), matching
   them against indexed `.py` files and `__init__.py` packages.
-- **Go** — resolves import paths against the module path declared in
-  `go.mod` plus the importing package's directory, so
-  `import "example.com/m/helper"` in a repo whose `go.mod` declares `module
-  example.com/m` finds `helper/`.
+- **Go** — strips the module path declared in `go.mod`'s `module` line from
+  the front of the import specifier; what remains names a package
+  **directory**, not a file (a Go package is one or more `.go` files sharing
+  a directory). The resolver does not consult the importing file's own
+  location at all — only the specifier and `go.mod` — and picks the first
+  `.go` file in the target directory by sorted path as the `imports` table's
+  single `resolvedFileId`, a deterministic tiebreaker for a relationship
+  that is really directory-to-directory. Call resolution then considers
+  every file in that directory, not only the one the import row points at
+  (see below) — otherwise a multi-file package's calls into a file other
+  than the sorted-first one would silently stay unresolved.
 - **Java** — derives one or more source roots (e.g. `src/main/java`) from the
   indexed paths themselves rather than assuming a convention, then resolves
   a named import's fully-qualified name against `<sourceRoot>/<package
@@ -223,9 +230,30 @@ subpackages — cobra's own root package is exactly this shape — will
 therefore always show `efferent: 0` for that module in `get_coupling`, not
 because the call graph is invisible (it is not, once you ask `trace_flow`
 or `impact_of`) but because inter-module coupling has nothing to measure
-when a package never crosses a directory boundary. See
+when a package never crosses a directory boundary. A per-module count of
+purely-internal (both ends inside the same module) call pairs would answer
+the question a single-package repo's user actually has here; it does not
+exist today and is recorded as a recommended follow-up, not a defect in
+this plan.
+
+**Go's package-directory resolution has the same blind spot, one level out,
+and is fixed the same way.** `goResolver` resolves a package import to only
+the first `.go` file in its directory by sorted path (see above) — a fine
+choice for the `imports` table's one-file-per-row shape, but a real Go
+package's exported symbol can live in any file in that directory, so a
+call into a symbol defined in a file other than the sorted-first one used
+to silently resolve to `unresolved`. Call resolution for Go imports now
+expands to every file sharing the resolved import's directory, the same
+way same-package resolution does above. Re-indexing spf13/cobra with both
+fixes applied: cross-file heuristic call edges rose further, from 1,437 to
+1,608. This does **not** move the *import*-resolution percentage (cobra's
+stays 12/190, 6.3%): that number was never about which file a resolved
+import's directory picked, only about how many of cobra's import
+specifiers name an external package (standard library, `spf13/pflag`, …)
+that isn't in the repository at all — genuinely `unresolved`, not a
+resolver defect. See
 `.superpowers/sdd/2026-09-16-multi-language/task-6-report.md` for the full
-before/after measurement.
+before/after measurement and the kill-the-resolver verification matrix.
 
 **Not supported.** The following grammars ship inside the installed
 `@vscode/tree-sitter-wasm` package but have no query files and no resolver:

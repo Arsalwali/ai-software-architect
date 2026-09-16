@@ -123,4 +123,71 @@ describe('same-package resolution stays correct under incremental indexing', () 
       after.close()
     }
   })
+
+  it('go: an EXISTING, unchanged caller resolves once a LATER-sorting sibling defines the callee (task-6-fixes-round2.md, Fix 3)', async () => {
+    // A Go import row can only ever record ONE file (the first by sorted
+    // path), but call resolution considers every file sharing that
+    // directory. Adding a file that sorts AFTER the existing first file
+    // never changes which file the import itself resolves to, so this
+    // exercises a dilation path the plain resolved-import-recompute
+    // widening cannot: `main.go`'s import of `multi` stays resolved to
+    // `aaa.go` throughout, yet its CALL to `multi.MultiFn` must still pick
+    // up `zzz.go` once that file appears.
+    const root = mkdtempSync(join(tmpdir(), 'arch-samepkg-go-multi-'))
+    // Module named "example.com/app", deliberately DIFFERENT from the
+    // "multi" package directory name: naming them the same (an earlier
+    // draft of this test did) makes the import specifier equal the module
+    // prefix itself, which goResolver resolves to the ROOT directory, not
+    // `multi/` -- a self-inflicted collision, not the case under test.
+    writeFixture(root, {
+      'go.mod': 'module example.com/app\n\ngo 1.22\n',
+      'multi/aaa.go': 'package multi\n\nfunc Unrelated() int {\n\treturn 0\n}\n',
+      // `main.go` is NOT rewritten for the rest of this test -- only a new
+      // sibling file is added, later in sort order, in the SAME package.
+      'main.go':
+        'package main\n\nimport "example.com/app/multi"\n\n' +
+        'func main() {\n\tmulti.MultiFn(1)\n}\n',
+    })
+    const dbPath = freshDb()
+    await runColdIndex({ repoRoot: root, dbPath })
+
+    const before = GraphStore.open(dbPath)
+    const beforeEdge = before.allEdgeDetails().find(e => e.dstName === 'MultiFn')!
+    before.close()
+    expect(beforeEdge.confidence).toBe('unresolved')
+
+    writeFixture(root, {
+      'multi/zzz.go': 'package multi\n\nfunc MultiFn(n int) int {\n\treturn n + 1\n}\n',
+    })
+    await runIncrementalIndex({ repoRoot: root, dbPath })
+
+    const after = GraphStore.open(dbPath)
+    try {
+      // The import row itself stays pointed at aaa.go -- unaffected, and
+      // deliberately asserted so a regression that changed goResolver's
+      // own "first file" choice would be caught here too, distinctly from
+      // the call-resolution assertion below.
+      const mainId = after.fileIdByPath('main.go')!
+      const aaaId = after.fileIdByPath('multi/aaa.go')!
+      const resolvedImport = after.importsForFile(mainId).find(i => i.rawSpecifier === 'example.com/app/multi')!
+      expect(resolvedImport.resolvedFileId).toBe(aaaId)
+
+      const afterEdge = after.allEdgeDetails().find(e => e.dstName === 'MultiFn')!
+      expect(afterEdge.confidence).toBe('heuristic')
+      expect(afterEdge.dstPath).toBe('multi/zzz.go')
+      expect(afterEdge.srcPath).toBe('main.go')
+
+      const incrementalSnapshot = canonicalGraph(after)
+      const coldDb = freshDb()
+      await runColdIndex({ repoRoot: root, dbPath: coldDb })
+      const cold = GraphStore.open(coldDb)
+      try {
+        expect(incrementalSnapshot).toBe(canonicalGraph(cold))
+      } finally {
+        cold.close()
+      }
+    } finally {
+      after.close()
+    }
+  })
 })

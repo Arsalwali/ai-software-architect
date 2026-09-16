@@ -25,6 +25,24 @@ import {
  * `helper`, `Place`/`place`) because each fixture uses that language's own
  * export convention (Go capitalises, Python/Java/Rust don't) -- see
  * fixtures-multilang.ts's own comments on each fixture.
+ *
+ * task-6-fixes-round2.md, Fix 1: a reviewer killed each language's import
+ * resolver in turn and re-ran this gate. For Go and Java, several claims
+ * STAYED GREEN with the resolver dead, because `Helper.java`/`Service.java`
+ * (Java) and, less severely, generic "any cross-file edge" checks (Go) are
+ * ALSO satisfiable by `src/indexer/same-package.ts`'s same-directory
+ * fallback -- a mechanism that is correctly independent of import
+ * resolution, but which means "some cross-file heuristic edge exists" no
+ * longer proves the IMPORT/FQN resolver specifically works. Fix: for Go and
+ * Java, `helperSymbol`/`helperPath`/`entrySymbol` below are pinned to a pair
+ * that crosses a DIRECTORY boundary on both ends (`service/` -> `helper/`
+ * for Go; `com/example` -> `com/example/util` for Java via
+ * `Service.label()` -> `StringUtil.greet()`, NOT `Service.place()` ->
+ * `Helper.help()`, which shares `Service.java`'s own directory with
+ * `Helper.java` and is exactly the pair the same-package fallback can cover
+ * for). Go's original `Help`/`service.go`/`helper.go`/`Place` pair was
+ * ALREADY cross-directory-safe (verified empirically below); only Java's
+ * needed to change.
  */
 interface LangCase {
   lang: string
@@ -33,9 +51,9 @@ interface LangCase {
   helperSymbol: string
   /** The file defining helperSymbol. */
   helperPath: string
-  /** The file whose `place`/`Place` method calls helperSymbol -- one directory away from helperPath. */
+  /** The file whose entry method calls helperSymbol -- a DIFFERENT directory from helperPath, for every language (see the class doc above on why that matters for Go/Java). */
   callerPath: string
-  /** The `place`/`Place` entry method traceFlow walks from. */
+  /** The entry method traceFlow walks from. */
   entrySymbol: string
 }
 
@@ -59,10 +77,14 @@ const CASES: LangCase[] = [
   {
     lang: 'java',
     build: buildJavaFixture,
-    helperSymbol: 'help',
-    helperPath: 'src/main/java/com/example/Helper.java',
+    // Pinned to Service.label() -> StringUtil.greet() (com/example ->
+    // com/example/util), NOT Service.place() -> Helper.help() -- see the
+    // class doc above. `Service.java` is still the caller, just via a
+    // different one of its own methods.
+    helperSymbol: 'greet',
+    helperPath: 'src/main/java/com/example/util/StringUtil.java',
     callerPath: 'src/main/java/com/example/Service.java',
-    entrySymbol: 'place',
+    entrySymbol: 'label',
   },
   {
     lang: 'rust',
@@ -73,6 +95,26 @@ const CASES: LangCase[] = [
     entrySymbol: 'place',
   },
 ]
+
+/**
+ * (srcPath, dstName) pairs whose edge is satisfiable by
+ * `src/indexer/same-package.ts`'s same-directory fallback ALONE, with no
+ * import involved at all -- Go's `single/two.go` -> `help` and Java's
+ * `Service.java` -> `help` (the ORIGINAL Service.place()/Helper.help() pair,
+ * same-directory) and `Worker.java` -> `internal`. Claim 7 below excludes
+ * these when computing its confidence breakdown, precisely because they
+ * would otherwise mask a fully-dead import/FQN resolver -- the exact
+ * coverage loss task-6-fixes-round2.md Fix 1 found.
+ */
+const SAME_DIRECTORY_ONLY_EDGES: Record<string, Array<{ srcPath: string; dstName: string }>> = {
+  python: [],
+  go: [{ srcPath: 'single/two.go', dstName: 'help' }],
+  java: [
+    { srcPath: 'src/main/java/com/example/Service.java', dstName: 'help' },
+    { srcPath: 'src/main/java/com/example/Worker.java', dstName: 'internal' },
+  ],
+  rust: [],
+}
 
 /**
  * Every import row across the WHOLE index. GraphStore only exposes imports
@@ -134,12 +176,22 @@ describe('multi-language integration: the analysis tools see what each resolver 
 
   // Claim 3: a cross-file CALL edge exists at heuristic confidence -- not
   // merely that SOME edge exists, since an unresolved edge always does
-  // regardless of whether the resolver works.
-  it.each(CASES)('$lang: a cross-file call edge exists at heuristic confidence', ({ lang }) => {
+  // regardless of whether the resolver works. Pinned to the exact
+  // (helperSymbol, helperPath, callerPath) triple (task-6-fixes-round2.md,
+  // Fix 1), NOT "any cross-file heuristic edge anywhere in the store": for
+  // Go and Java, `single/two.go` -> `help` and (the ORIGINAL pairing)
+  // `Service.java` -> `help` are ALSO heuristic edges, produced entirely by
+  // the same-package fallback with no import involved -- a generic "some
+  // edge exists" check would stay green even with the import/FQN resolver
+  // completely deleted. `helperPath`/`callerPath` are pinned to a
+  // cross-DIRECTORY pair for every language specifically so this can only
+  // be satisfied by import resolution actually working.
+  it.each(CASES)('$lang: the import-mediated cross-file call edge resolves at heuristic confidence', ({ lang, helperSymbol, helperPath, callerPath }) => {
     const store = stores.get(lang)!
-    const crossFileHeuristicCalls = store.allEdgeDetails().filter(e =>
-      e.kind === 'calls' && e.confidence === 'heuristic' && e.dstPath !== null && e.dstPath !== e.srcPath)
-    expect(crossFileHeuristicCalls.length).toBeGreaterThan(0)
+    const edge = store.allEdgeDetails().find(e =>
+      e.kind === 'calls' && e.dstName === helperSymbol && e.srcPath === callerPath && e.dstPath === helperPath)
+    expect(edge, `no edge ${callerPath} -> ${helperPath} (${helperSymbol}) for ${lang}`).toBeDefined()
+    expect(edge!.confidence).toBe('heuristic')
   })
 
   // task-6-fixes.md: Go and Java scope names by DIRECTORY, so two files in
@@ -186,7 +238,10 @@ describe('multi-language integration: the analysis tools see what each resolver 
   })
 
   // Claim 5: impact_of finds a cross-file reference to the helper symbol
-  // each fixture defines, from the file that calls it.
+  // each fixture defines, from the file that calls it. Pinned to a
+  // cross-directory pair for Go/Java (see the class doc on `LangCase`
+  // above): a same-directory pair here would stay green even with the
+  // FQN/import resolver deleted, via the same-package fallback alone.
   it.each(CASES)('$lang: impact_of finds a cross-file reference to the helper symbol', ({ lang, helperSymbol, callerPath }) => {
     const store = stores.get(lang)!
     const r = impactOf(store, { symbol: helperSymbol, maxDepth: 5, limit: 50 })
@@ -196,7 +251,8 @@ describe('multi-language integration: the analysis tools see what each resolver 
 
   // Claim 6: trace_flow crosses a file boundary -- a node whose path differs
   // from the root's, proving the call graph walk actually follows a
-  // resolved cross-file edge rather than stopping at the entry file.
+  // resolved cross-file edge rather than stopping at the entry file. Pinned
+  // the same way as claim 5, for the same reason.
   it.each(CASES)('$lang: trace_flow crosses a file boundary from the entry point', ({ lang, entrySymbol, callerPath }) => {
     const store = stores.get(lang)!
     const r = traceFlow(store, { entry: entrySymbol, maxDepth: 5, limit: 50 })
@@ -213,11 +269,25 @@ describe('multi-language integration: the analysis tools see what each resolver 
   // collisions) must not be treated as a failure -- so this only asserts
   // that unresolved edges are not the WHOLE population, never that the
   // breakdown contains solely resolved/heuristic.
-  it.each(CASES)('$lang: confidence breakdown is not entirely unresolved', ({ lang }) => {
+  //
+  // task-6-fixes-round2.md, Fix 1: computed over `calls` edges EXCLUDING
+  // `SAME_DIRECTORY_ONLY_EDGES` -- a STRICTER check than the whole-store
+  // `store.confidenceBreakdown()`, not a weaker one: this excluded set is a
+  // subset of all edges, so "the subset has a non-unresolved edge" implies
+  // "the whole store does" too, but not the reverse. Without the exclusion,
+  // this claim stayed GREEN for Go and Java even with their import/FQN
+  // resolver completely deleted, because the same-package fallback alone
+  // guarantees a non-unresolved edge exists somewhere in the fixture,
+  // independent of whether import resolution works at all -- exactly the
+  // coverage loss this fix round exists to close.
+  it.each(CASES)('$lang: confidence breakdown, excluding same-package-only calls, is not entirely unresolved', ({ lang }) => {
     const store = stores.get(lang)!
-    const breakdown = store.confidenceBreakdown()
-    const totalEdges = store.totals().edges
-    expect(totalEdges).toBeGreaterThan(0)
-    expect(breakdown.unresolved).toBeLessThan(totalEdges)
+    const excluded = SAME_DIRECTORY_ONLY_EDGES[lang] ?? []
+    const isSameDirectoryOnly = (e: { srcPath: string; dstName: string }) =>
+      excluded.some(x => x.srcPath === e.srcPath && x.dstName === e.dstName)
+    const relevant = store.allEdgeDetails().filter(e => e.kind === 'calls' && !isSameDirectoryOnly(e))
+    const unresolvedCount = relevant.filter(e => e.confidence === 'unresolved').length
+    expect(relevant.length).toBeGreaterThan(0)
+    expect(unresolvedCount).toBeLessThan(relevant.length)
   })
 })

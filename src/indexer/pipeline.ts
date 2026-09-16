@@ -70,6 +70,13 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     const fileIdByPath = new Map<string, number>()
     for (const path of knownPaths) fileIdByPath.set(path, store.fileIdByPath(path)!)
 
+    // Go/Java only (see same-package.ts): same-directory siblings need no
+    // import at all, so their candidate symbols must be gathered separately
+    // from the import-based candidates below. Computed here, before import
+    // resolution, because Go's package-directory widening (below) needs it
+    // too, not only the same-package call fallback in Phase 4b.
+    const sameDirFileIds = sameDirectoryFileIds(knownPaths, fileIdByPath)
+
     const importRows: ImportInput[] = []
     const importedFileIds = new Map<number, number[]>()
 
@@ -81,7 +88,25 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
       for (const raw of file.imports) {
         const { path: resolvedPath, confidence } = resolveImport(file.path, raw.specifier, knownPaths, repoRoot)
         const resolvedFileId = resolvedPath ? fileIdByPath.get(resolvedPath) ?? null : null
-        if (resolvedFileId !== null) targets.push(resolvedFileId)
+        if (resolvedFileId !== null) {
+          targets.push(resolvedFileId)
+          // Go only (task-6-fixes-round2.md, Fix 3): a Go import specifier
+          // names a PACKAGE -- a DIRECTORY -- and goResolver deterministically
+          // resolves the `imports` table's single `resolvedFileId` to only
+          // the FIRST file in that directory by sorted path (see
+          // src/resolve/go.ts's own doc comment). A real Go package's
+          // exported symbol can live in ANY file sharing that directory, so
+          // call resolution must consider every sibling file's exports too,
+          // not only the one file goResolver happened to pick -- otherwise a
+          // package split across multiple files resolves its import but
+          // still silently drops most of its own call graph. Gated on the
+          // IMPORTING file's language, not the target's, since a Go file's
+          // import specifier is always a Go package path; a Java import
+          // names a single class/file and must NOT be widened this way.
+          if (file.lang === 'go') {
+            for (const sibling of sameDirFileIds.get(resolvedFileId) ?? []) targets.push(sibling)
+          }
+        }
         importRows.push({
           fileId,
           rawSpecifier: raw.specifier,
@@ -98,10 +123,6 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
     // Phase 4b — resolve calls against the now-complete symbol table
     const symbolsByFile = store.symbolsByFile()
     const exportedByFile = store.exportedSymbolsByFile()
-    // Go/Java only (see same-package.ts): same-directory siblings need no
-    // import at all, so their candidate symbols must be gathered separately
-    // from the import-based `exportedByFile` above.
-    const sameDirFileIds = sameDirectoryFileIds(knownPaths, fileIdByPath)
     const edges: EdgeInput[] = []
 
     for (const file of parsed) {

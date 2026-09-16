@@ -112,4 +112,43 @@ describe('go produces a real graph', () => {
       store.close()
     }
   })
+
+  // task-6-fixes-round2.md, Fix 3: goResolver deterministically resolves an
+  // `imports` row to only the FIRST file in a package directory by sorted
+  // path (aaa.go < zzz.go) -- verified below, UNCHANGED by this fix, since
+  // one import row can only ever record one file. `multi.MultiFn` is
+  // defined in `zzz.go`, the file that sorts SECOND, so this call could
+  // only ever resolve if call resolution considers every file sharing the
+  // resolved import's directory, not merely the one file the import row
+  // itself points at.
+  it('resolves a call to a symbol in a LATER-sorting file of a multi-file package', async () => {
+    const fixture = buildGoFixture({ git: true })
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-go-multi-db-')), 'index.db')
+    await runColdIndex({ repoRoot: fixture, dbPath })
+
+    const store = GraphStore.open(dbPath)
+    try {
+      const aaaId = store.fileIdByPath('multi/aaa.go')!
+      const zzzId = store.fileIdByPath('multi/zzz.go')!
+      const mainId = store.fileIdByPath('main.go')!
+
+      // The import row itself: resolves to aaa.go, the sorted-first file --
+      // this is goResolver's documented, unchanged behaviour, not a bug to
+      // fix here. If this ever starts pointing at zzz.go instead, that is a
+      // DIFFERENT change (to goResolver itself) and this assertion should
+      // be revisited, not silently adjusted.
+      const resolved = store.importsForFile(mainId).find(i => i.rawSpecifier === 'example.com/m/multi')!
+      expect(resolved.resolvedFileId).toBe(aaaId)
+      expect(resolved.confidence).toBe('resolved')
+
+      // The call edge: must reach zzz.go's MultiFn, not stop at aaa.go
+      // (which has no such symbol) and fall back to unresolved.
+      const call = store.edgesInto(zzzId).find(e => e.dstName === 'MultiFn')!
+      expect(call, 'multi.MultiFn call did not resolve into zzz.go').toBeDefined()
+      expect(call.confidence).toBe('heuristic')
+      expect(call.srcFileId).toBe(mainId)
+    } finally {
+      store.close()
+    }
+  })
 })

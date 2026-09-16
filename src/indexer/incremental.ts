@@ -121,6 +121,34 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
       }
     }
 
+    // Go package-directory dilation (task-6-fixes-round2.md, Fix 3): an
+    // import row records only ONE file per Go package (the first by sorted
+    // path -- see src/resolve/go.ts), but call resolution now considers
+    // every file sharing that file's directory (see pipeline.ts's mirror of
+    // this). Adding, changing, or removing a `.go` file therefore requires
+    // re-resolving every OTHER file that imports its package directory,
+    // even when the recorded `resolvedFileId` itself does not change --
+    // adding a file that sorts AFTER the existing first file never changes
+    // which file sorts first, so the resolved-import-recompute widening
+    // above cannot detect this on its own.
+    const dirtyGoPackageDirs = new Set<string>()
+    for (const path of [...changes.changed, ...changes.deleted]) {
+      if (path.endsWith('.go')) dirtyGoPackageDirs.add(dirname(path))
+    }
+    if (dirtyGoPackageDirs.size > 0) {
+      for (const [path, fileId] of idsByPath) {
+        if (dilation.has(path)) continue
+        for (const imp of store.importsForFile(fileId)) {
+          if (imp.resolvedFileId === null) continue
+          const targetPath = pathsById.get(imp.resolvedFileId)
+          if (targetPath && targetPath.endsWith('.go') && dirtyGoPackageDirs.has(dirname(targetPath))) {
+            dilation.add(path)
+            break
+          }
+        }
+      }
+    }
+
     // A file that vanished cannot be re-parsed.
     for (const gone of changes.deleted) dilation.delete(gone)
 
@@ -145,6 +173,13 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
     const knownPaths = new Set(store.allFilePaths())
     const freshIds = store.fileIdsByPath()
 
+    // Go/Java only (see same-package.ts): same-directory siblings need no
+    // import at all, so their candidate symbols are gathered separately
+    // from import-based candidates below. Computed here, before import
+    // resolution, because Go's package-directory widening (below) needs it
+    // too -- mirrors pipeline.ts's cold-index path.
+    const sameDirFileIds = sameDirectoryFileIds(knownPaths, freshIds)
+
     // Replace imports and outgoing edges for the whole dilation.
     const importRows: ImportInput[] = []
     const importedFileIds = new Map<number, number[]>()
@@ -161,7 +196,16 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
       for (const raw of file.imports) {
         const { path: resolvedPath, confidence } = resolveImport(path, raw.specifier, knownPaths, repoRoot)
         const resolvedFileId = resolvedPath ? freshIds.get(resolvedPath) ?? null : null
-        if (resolvedFileId !== null) targets.push(resolvedFileId)
+        if (resolvedFileId !== null) {
+          targets.push(resolvedFileId)
+          // Go only (task-6-fixes-round2.md, Fix 3): see pipeline.ts's
+          // identical widening for why -- a Go import names a package
+          // directory, and the `resolvedFileId` above is only the first
+          // file in it by sort order.
+          if (file.lang === 'go') {
+            for (const sibling of sameDirFileIds.get(resolvedFileId) ?? []) targets.push(sibling)
+          }
+        }
         importRows.push({
           fileId, rawSpecifier: raw.specifier, resolvedFileId,
           kind: raw.kind, confidence, line: raw.line,
@@ -174,10 +218,6 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
     // Re-resolve calls for the dilation against the now-current symbol table.
     const symbolsByFile = store.symbolsByFile()
     const exportedByFile = store.exportedSymbolsByFile()
-    // Go/Java only: same-directory siblings need no import at all, so their
-    // candidate symbols are gathered separately from the import-based
-    // `exportedByFile` above -- mirrors pipeline.ts's cold-index path.
-    const sameDirFileIds = sameDirectoryFileIds(knownPaths, freshIds)
     const edges: EdgeInput[] = []
 
     for (const path of toParse) {
