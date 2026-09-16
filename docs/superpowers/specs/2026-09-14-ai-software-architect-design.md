@@ -68,7 +68,11 @@ first occupant, and can be added without schema changes.
 ## 5. Architecture
 
 Eight modules. Everything language-specific sits behind one normalized record type, so
-adding a language means adding a directory, never editing core.
+no module downstream of the parser knows what language anything was written in. That
+boundary holds. What does NOT hold — and the original wording of this paragraph claimed
+it did — is that adding a language never touches core: a language declares itself in the
+parser's registry and may need one or two shape-dependent hooks inside the parser and
+indexer. §5.2 lists exactly what is required and what is optional.
 
 ```
   repo-source ──► parser ──► resolver ──► graph-store ◄── summarizer
@@ -106,9 +110,49 @@ interface ParsedFile {
 ```
 
 **This type is the load-bearing contract of the project.** No module downstream of the
-parser knows what language anything was written in. Adding Ruby support means supplying
-a grammar and four query files — `symbols`, `imports`, `calls`, `exports` — and changing
-nothing else. Write this type first and defend it.
+parser knows what language anything was written in. Write this type first and defend it.
+
+**What adding a language actually costs.** An earlier version of this section promised
+"a grammar and four query files … and changing nothing else". That was false, and the
+multi-language work counted five to ten files. The honest seam, as built:
+
+*Required, for every language:*
+
+1. **One entry in the language registry** (`src/parser/languages.ts`). The entry is a
+   typed record, so it cannot be partially filled in: extensions, the wasm grammar, the
+   query directory, the resolver key, the **export rule**, the **enclosing-symbol node
+   types**, and the **entry-point basenames**. The last three used to be tables held
+   elsewhere, and each failed *silently* when a new language omitted it — every symbol
+   `exported: false` and therefore zero cross-file call edges; every `enclosingSymbol`
+   null and therefore `trace_flow` and `impact_of` blind; no entry points, so
+   `get_repo_overview` reports "no entry points" for a repository with an obvious one.
+   They live in the registry so that omission is a compile error instead.
+2. **Three query files** in `src/parser/queries/<dir>`: `symbols.scm`, `imports.scm`,
+   `calls.scm`. Not four — there is no `exports.scm`; visibility is decided by the
+   registry's export rule against the AST, because no language this project supports
+   expresses its export surface in a way one query can capture.
+3. **An import resolver** in `src/resolve`, registered under the entry's `resolverId`,
+   or reuse of an existing one (the four JS-family entries share one).
+
+*Optional, depending on the language's shape:*
+
+- `METHOD_CONTAINER_TYPES` (`src/parser/parser.ts`) — only when a method parses as a
+  plain function nested inside a type body, so `symbols.scm` alone cannot tell the two
+  apart (Python, Rust).
+- `ENCLOSING_CLASS_TYPES` (`src/parser/parser.ts`) — only when a method's container is
+  something other than `class_declaration` (Java's interfaces, enums, records and
+  annotation types), or is named by a field on the method itself rather than by an
+  ancestor (Go's receiver, which has its own branch).
+- `SAME_PACKAGE_LANGS` (`src/indexer/same-package.ts`), plus the matching widening in
+  `src/indexer/incremental.ts` — only for directory-scoped languages whose sibling files
+  reference each other with no import at all (Go, Java).
+- An `@member` capture in `imports.scm` — only when one import specifier is spread
+  across two grammar nodes (Python's `from pkg import service`).
+
+The difference between the two lists is failure mode, not importance. Omitting anything
+required fails loudly or does not compile. Omitting an optional hook degrades one
+specific, observable thing: a `method` reported as a `function`, or a same-package call
+left `unresolved`. Nothing in either list fails silently any more.
 
 ### 5.3 `resolver`
 

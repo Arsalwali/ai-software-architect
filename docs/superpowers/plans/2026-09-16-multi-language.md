@@ -1074,7 +1074,8 @@ git commit -m "test: multi-language integration gate, and document language supp
 - Each language resolves at least one cross-file import and produces at least one cross-file `heuristic` call edge.
 - `get_coupling` returns non-zero coupling for each language's fixture, so the module graph is real rather than empty.
 - No language's confidence breakdown is entirely `unresolved`.
-- The per-language resolver seam the spec promised exists, and adding a fifth language is a registry entry, three query files, and a resolver.
+- The per-language resolver seam the spec promised exists, and adding a fifth language is a **complete registry entry** (extensions, grammar, query directory, resolver key, export rule, enclosing-symbol node types and entry-point basenames — all required fields, so none can be silently omitted), **three query files** (`symbols.scm`, `imports.scm`, `calls.scm`; there is no `exports.scm`), and **a resolver** in `src/resolve` or reuse of an existing one.
+- Beyond that, a language may need one or more OPTIONAL, shape-dependent hooks, and the plan says so rather than pretending otherwise: `METHOD_CONTAINER_TYPES` and `ENCLOSING_CLASS_TYPES` in `src/parser/parser.ts`, `SAME_PACKAGE_LANGS` in `src/indexer/same-package.ts` with its matching incremental widening, and an `@member` capture in `imports.scm`. Each of these degrades one observable thing when omitted; none of them fails silently. Spec §5.2 carries the same list.
 - The full suite passes with no existing assertion weakened, and the incremental-vs-full equality invariant still holds.
 
 ## Deliberately out of scope
