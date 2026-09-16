@@ -220,11 +220,10 @@ describe('rustResolver — crate::Item and crate::* reach the crate root file (f
 
   // Regression guard, named explicitly by the controller: the new
   // empty-module branch must not swallow an ORDINARY multi-segment path.
-  // Verified by deleting the `isGlob || rest.length === 0` distinction
-  // never enters here in the first place — this specifier's first attempt
-  // (`helper/help`) fails, and its second (`helper`) is non-empty, so it
-  // never reaches the new branch at all; this test simply proves that
-  // remains true after round 2's change.
+  // This specifier never reaches that branch: its first attempt
+  // (`helper/help`) misses, and its second (`helper`) is non-empty, so the
+  // empty-module case is never entered. The test proves that remains true
+  // after round 2's change.
   it('still resolves an ordinary multi-segment path normally (regression guard)', () => {
     const known = new Set(['src/lib.rs', 'src/helper.rs', 'src/service.rs'])
     const result = rustResolver.resolve('src/service.rs', 'crate::helper::help', known, '/repo')
