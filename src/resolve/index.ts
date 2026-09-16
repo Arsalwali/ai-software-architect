@@ -1,6 +1,7 @@
 import { languageForPath } from '../parser/languages.js'
 import type { Confidence } from '../types.js'
 import { javascriptResolver } from './javascript.js'
+import { pythonResolver } from './python.js'
 
 export interface ResolvedImport {
   path: string | null
@@ -26,7 +27,10 @@ export interface ImportResolver {
  * compile time, so a registration call would be indirection without a caller.
  * Each language task adds one line here.
  */
-const RESOLVERS = new Map<string, ImportResolver>([[javascriptResolver.id, javascriptResolver]])
+const RESOLVERS = new Map<string, ImportResolver>([
+  [javascriptResolver.id, javascriptResolver],
+  [pythonResolver.id, pythonResolver],
+])
 
 /**
  * The resolver for a file's language.

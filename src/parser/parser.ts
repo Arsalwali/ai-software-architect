@@ -58,7 +58,7 @@ export class RepoParser {
         lang: def.id,
         contentHash,
         loc,
-        symbols: extractSymbols(compiled.symbols, tree.rootNode),
+        symbols: extractSymbols(compiled.symbols, tree.rootNode, def.id),
         imports: extractImports(compiled.imports, tree.rootNode),
         callSites: extractCalls(compiled.calls, tree.rootNode),
         errors: extractErrors(tree.rootNode),
@@ -73,35 +73,84 @@ function readQuery(def: LanguageDef, name: string): string {
   return readFileSync(join(def.queryDir, `${name}.scm`), 'utf8')
 }
 
-function extractSymbols(query: Query, root: Node): SourceSymbol[] {
+/**
+ * Node types whose presence in a definition's ancestor chain means the
+ * definition is a method rather than a top-level function, keyed by
+ * language id. Only languages whose grammar has no distinct method node
+ * need an entry: there, a method parses as an ordinary function nested in a
+ * class body, so `symbols.scm` alone cannot tell it apart and this ancestry
+ * check does. TypeScript/JavaScript already capture methods explicitly via
+ * `def.method` in their query and need no entry here — Rust will add one
+ * for `impl_item` in a later task.
+ */
+const METHOD_CONTAINER_TYPES: Record<string, string[]> = {
+  python: ['class_definition'],
+}
+
+function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[] {
+  const methodContainers = METHOD_CONTAINER_TYPES[langId]
   const symbols: SourceSymbol[] = []
   for (const match of query.matches(root)) {
     const nameCapture = match.captures.find(c => c.name === 'name')
     const defCapture = match.captures.find(c => c.name.startsWith('def.'))
     if (!nameCapture || !defCapture) continue
 
-    const kind = defCapture.name.slice('def.'.length) as SymbolKind
+    let kind = defCapture.name.slice('def.'.length) as SymbolKind
     const node = defCapture.node
+    let parentName: string | null = null
+
+    if (kind === 'method') {
+      parentName = enclosingClassName(node)
+    } else if (kind === 'function' && methodContainers) {
+      const container = enclosingContainerOfType(node, methodContainers)
+      if (container) {
+        kind = 'method'
+        parentName = container.childForFieldName('name')?.text ?? null
+      }
+    }
+
     symbols.push({
       name: nameCapture.node.text,
       kind,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
-      exported: isExported(node),
+      exported: isExported(node, langId),
       signature: signatureOf(node),
-      parentName: kind === 'method' ? enclosingClassName(node) : null,
+      parentName,
     })
   }
   return symbols
 }
 
+/** Walks ancestors looking for the nearest node whose type is in `types`. */
+function enclosingContainerOfType(node: Node, types: string[]): Node | null {
+  let current = node.parent
+  while (current) {
+    if (types.includes(current.type)) return current
+    current = current.parent
+  }
+  return null
+}
+
 /**
- * A declaration is exported when an `export_statement` sits above it. For
+ * Whether a declaration is part of a file's importable surface, by each
+ * language's own visibility rule.
+ *
+ * TypeScript/JavaScript: an `export_statement` sits above it. For
  * `export const x = () => {}` the variable_declarator is two levels deeper
  * (declarator -> lexical_declaration -> export_statement), so walk a bounded
  * number of ancestors rather than assuming a fixed depth.
+ *
+ * Python has no export keyword — every module-level definition is
+ * importable by name (`from module import _name` still works even for a
+ * leading-underscore name; the convention only affects `import *`). So the
+ * rule there is simply "is this definition's parent the module itself", the
+ * same test that already keeps a class's methods from being misclassified
+ * as exported.
  */
-function isExported(node: Node): boolean {
+function isExported(node: Node, langId: string): boolean {
+  if (langId === 'python') return node.parent?.type === 'module'
+
   let current: Node | null = node
   for (let depth = 0; current && depth < 3; depth++) {
     if (current.type === 'export_statement') return true
@@ -133,6 +182,8 @@ const IMPORT_MECHANISMS = new Set(['require', 'import'])
 
 const ENCLOSING_SYMBOL_NODES = new Set([
   'function_declaration', 'method_definition', 'arrow_function', 'function_expression',
+  // Python has one node for both a function and a method.
+  'function_definition',
 ])
 
 function extractImports(query: Query, root: Node): RawImport[] {
