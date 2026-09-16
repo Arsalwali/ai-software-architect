@@ -7,6 +7,7 @@ import { GraphStore } from '../src/store/graph-store.js'
 import { getCoupling } from '../src/tools/coupling.js'
 import { impactOf } from '../src/tools/impact.js'
 import { traceFlow, type FlowNode } from '../src/tools/flow.js'
+import { buildOverview } from '../src/tools/overview.js'
 import {
   buildPythonFixture, buildGoFixture, buildJavaFixture, buildRustFixture,
 } from './fixtures-multilang.js'
@@ -225,6 +226,25 @@ describe('multi-language integration: the analysis tools see what each resolver 
     expect(edge, 'no edge from Worker.java to internal').toBeDefined()
     expect(edge!.dstPath).toBe('src/main/java/com/example/Helper.java')
     expect(edge!.confidence).toBe('heuristic')
+  })
+
+  // final-fixes.md item 2: `get_repo_overview` reported ZERO entry points
+  // for every one of the four new languages, because the conventional
+  // basename list in src/tools/entry-points.ts was JS-only. "This
+  // repository has no entry points", said about a repo whose root holds
+  // `main.go` or whose `src/` holds `main.rs`, is a confident wrong answer
+  // -- and it also silently zeroes `impact_of`'s `exportedFromEntryPoint`
+  // flag for those languages. Asserted against the SHIPPED fixtures, not a
+  // purpose-built one, so it is the real repo shape that is covered.
+  // `buildOverview` is called with no repoRoot here deliberately: these
+  // fixtures have no package.json, so only the basename rule can be what
+  // produces the hit.
+  it('go: get_repo_overview lists main.go as an entry point', () => {
+    expect(buildOverview(stores.get('go')!).entryPoints).toContain('main.go')
+  })
+
+  it('rust: get_repo_overview lists src/main.rs as an entry point', () => {
+    expect(buildOverview(stores.get('rust')!).entryPoints).toContain('src/main.rs')
   })
 
   // Claim 4: the MODULE graph has a real edge. Without this, find_cycles and

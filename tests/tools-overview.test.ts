@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { join } from 'node:path'
-import { mkdtempSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { runColdIndex } from '../src/indexer/pipeline.js'
 import { buildOverview } from '../src/tools/overview.js'
@@ -64,5 +64,73 @@ describe('buildOverview', () => {
   it('detects entry points', () => {
     const o = buildOverview(store)
     expect(o.entryPoints).toContain('src/index.ts')
+  })
+})
+
+/**
+ * final-fixes.md item 2. The entry-basename list was JS-only, so every
+ * non-JS language reported "no entry points". The Go and Rust halves are
+ * asserted against the SHIPPED fixtures in multilang-integration.test.ts;
+ * Python's `__main__.py` and Java's `Main.java` have no such fixture, so
+ * this builds a purpose-made one covering all four at once rather than
+ * perturbing a shared fixture that a dozen other expectations depend on.
+ *
+ * Every file here carries real content, not a stub: a file that fails to
+ * parse or extracts no symbol would still be listed as an entry point (the
+ * check is on the path alone), so an empty file would make this test pass
+ * for the wrong reason.
+ */
+describe('entry-point basenames for every indexed language', () => {
+  const ENTRY_FILES: Record<string, string> = {
+    'main.go': 'package main\n\nfunc main() {\n\tprintln("hi")\n}\n',
+    'src/main.rs': 'fn main() {\n    println!("hi");\n}\n',
+    'app/__main__.py': 'def main():\n    return 1\n\n\nmain()\n',
+    'src/main/java/com/example/Main.java':
+      'package com.example;\n\npublic class Main {\n' +
+      '  public static void main(String[] args) { System.out.println("hi"); }\n}\n',
+    // A non-entry file per language, so "lists everything it indexed" would
+    // not pass either.
+    'helper.go': 'package main\n\nfunc help() int {\n\treturn 1\n}\n',
+    'src/helper.rs': 'pub fn help() -> i32 {\n    1\n}\n',
+    'app/helper.py': 'def help():\n    return 1\n',
+    'src/main/java/com/example/Helper.java':
+      'package com.example;\n\npublic class Helper {\n  public static int help() { return 1; }\n}\n',
+  }
+
+  let entryPoints: string[]
+
+  beforeAll(async () => {
+    const root = mkdtempSync(join(tmpdir(), 'arch-entry-'))
+    for (const [rel, content] of Object.entries(ENTRY_FILES)) {
+      const abs = join(root, rel)
+      mkdirSync(dirname(abs), { recursive: true })
+      writeFileSync(abs, content)
+    }
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-entry-db-')), 'index.db')
+    await runColdIndex({ repoRoot: root, dbPath })
+    const s = GraphStore.open(dbPath)
+    try {
+      // No package.json exists in this fixture, so the basename rule is the
+      // only thing that can produce a hit.
+      entryPoints = buildOverview(s, root).entryPoints
+    } finally {
+      s.close()
+    }
+  })
+
+  it.each([
+    ['go', 'main.go'],
+    ['rust', 'src/main.rs'],
+    ['python', 'app/__main__.py'],
+    ['java', 'src/main/java/com/example/Main.java'],
+  ])('%s: %s is recognised as an entry point', (_lang, path) => {
+    expect(entryPoints).toContain(path)
+  })
+
+  it('does not treat every indexed file as an entry point', () => {
+    expect(entryPoints).not.toContain('helper.go')
+    expect(entryPoints).not.toContain('src/helper.rs')
+    expect(entryPoints).not.toContain('app/helper.py')
+    expect(entryPoints).not.toContain('src/main/java/com/example/Helper.java')
   })
 })

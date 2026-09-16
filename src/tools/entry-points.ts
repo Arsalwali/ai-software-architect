@@ -12,6 +12,15 @@ import { join } from 'node:path'
 export const ENTRY_BASENAMES = new Set([
   'index.ts', 'index.tsx', 'index.js', 'index.mjs',
   'main.ts', 'main.js', 'server.ts', 'server.js', 'app.ts', 'app.js', 'cli.ts', 'cli.js',
+  // The four non-JS languages this index supports. Their absence was a
+  // silent failure, not a degraded one: `get_repo_overview` answered "this
+  // repository has no entry points" for a Go repo whose root holds
+  // `main.go`, and `impact_of`'s `exportedFromEntryPoint` was `false` for
+  // every symbol in those languages. `main.go` and `main.rs` are the
+  // compiler-mandated binary entry points for Go and Rust; `__main__.py` is
+  // what `python -m pkg` executes; `Main.java` is the near-universal
+  // convention for the class holding `public static void main`.
+  'main.go', 'main.rs', '__main__.py', 'Main.java',
 ])
 
 /**
