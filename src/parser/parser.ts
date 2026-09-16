@@ -2,7 +2,7 @@ import { Parser, Query, type Language, type Node } from 'web-tree-sitter'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { LANGUAGES, languageForPath, loadLanguage, type LanguageDef } from './languages.js'
+import { LANGUAGES, languageForPath, loadLanguage, type ExportRule, type LanguageDef } from './languages.js'
 import type { ParsedFile, SourceSymbol, SymbolKind, RawImport, CallSite, ParseError } from '../types.js'
 
 interface Compiled {
@@ -58,9 +58,9 @@ export class RepoParser {
         lang: def.id,
         contentHash,
         loc,
-        symbols: extractSymbols(compiled.symbols, tree.rootNode, def.id),
+        symbols: extractSymbols(compiled.symbols, tree.rootNode, def),
         imports: extractImports(compiled.imports, tree.rootNode),
-        callSites: extractCalls(compiled.calls, tree.rootNode),
+        callSites: extractCalls(compiled.calls, tree.rootNode, def.enclosingSymbolNodes),
         errors: extractErrors(tree.rootNode),
       }
     } finally {
@@ -122,7 +122,8 @@ const ENCLOSING_CLASS_TYPES: Record<string, string[]> = {
 }
 const DEFAULT_ENCLOSING_CLASS_TYPES = ['class_declaration']
 
-function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[] {
+function extractSymbols(query: Query, root: Node, def: LanguageDef): SourceSymbol[] {
+  const langId = def.id
   const methodContainers = METHOD_CONTAINER_TYPES[langId]
   const symbols: SourceSymbol[] = []
   for (const match of query.matches(root)) {
@@ -149,7 +150,7 @@ function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[
       kind,
       startLine: node.startPosition.row + 1,
       endLine: node.endPosition.row + 1,
-      exported: isExported(node, langId, nameCapture.node.text),
+      exported: isExported(node, def.exportRule, nameCapture.node.text),
       signature: signatureOf(node),
       parentName,
     })
@@ -183,8 +184,15 @@ function containerName(container: Node): string | null {
 }
 
 /**
- * Whether a declaration is part of a file's importable surface, by each
- * language's own visibility rule.
+ * Whether a declaration is part of a file's importable surface, by the
+ * visibility rule its language DECLARES in the registry
+ * (`LanguageDef.exportRule`, src/parser/languages.ts) rather than by a
+ * language id switched on here. The direction matters: a language that
+ * reached this function with no matching branch used to fall through to the
+ * JavaScript `export_statement` walk and mark every one of its symbols
+ * `exported: false`, producing zero cross-file call edges with nothing
+ * failing anywhere. `exportRule` is a required registry field and the
+ * switch below is exhaustive, so that path no longer exists.
  *
  * TypeScript/JavaScript: an `export_statement` sits above it. For
  * `export const x = () => {}` the variable_declarator is two levels deeper
@@ -206,18 +214,31 @@ function containerName(container: Node): string | null {
  * `function_declaration` the text starts with the `func` keyword, whose
  * first letter is lowercase regardless of the function's own name.
  */
-function isExported(node: Node, langId: string, name: string): boolean {
-  if (langId === 'python') return node.parent?.type === 'module'
-  if (langId === 'go') return isGoExportedName(name)
-  if (langId === 'java') return isJavaExported(node)
-  if (langId === 'rust') return isRustExported(node)
-
-  let current: Node | null = node
-  for (let depth = 0; current && depth < 3; depth++) {
-    if (current.type === 'export_statement') return true
-    current = current.parent
+function isExported(node: Node, rule: ExportRule, name: string): boolean {
+  // Exhaustive over `ExportRule`, with no `default` and no fallback branch
+  // on purpose: adding a rule to that union without adding its case here
+  // makes this function's inferred return type `boolean | undefined`, which
+  // fails to compile against the declared `boolean`. That compile error
+  // stands in for what used to be a silent `exported: false` across a whole
+  // new language.
+  switch (rule) {
+    case 'python-module-level':
+      return node.parent?.type === 'module'
+    case 'go-capitalised':
+      return isGoExportedName(name)
+    case 'java-public-or-interface-member':
+      return isJavaExported(node)
+    case 'rust-visibility-modifier':
+      return isRustExported(node)
+    case 'js-export-statement': {
+      let current: Node | null = node
+      for (let depth = 0; current && depth < 3; depth++) {
+        if (current.type === 'export_statement') return true
+        current = current.parent
+      }
+      return false
+    }
   }
-  return false
 }
 
 /**
@@ -334,21 +355,6 @@ function goReceiverTypeName(node: Node): string | null {
 /** Names that are import mechanisms, not real call targets. */
 const IMPORT_MECHANISMS = new Set(['require', 'import'])
 
-const ENCLOSING_SYMBOL_NODES = new Set([
-  'function_declaration', 'method_definition', 'arrow_function', 'function_expression',
-  // Python has one node for both a function and a method.
-  'function_definition',
-  // Go's method_declaration is captured explicitly as def.method (unlike
-  // Python, it needs no METHOD_CONTAINER_TYPES entry) but is still a
-  // distinct node type from function_declaration, so it needs its own
-  // entry here too; it shapes its `name` field identically.
-  'method_declaration',
-  // Rust's `function_item` is both a free function and (nested inside an
-  // `impl_item`/`trait_item`) a method — one node type covers both, like
-  // Python's `function_definition`, and it has a normal `name` field.
-  'function_item',
-])
-
 /**
  * Query capability, not a per-language table: a pattern may capture an
  * optional `@member` alongside `@specifier` when one import specifier is
@@ -387,7 +393,7 @@ function extractImports(query: Query, root: Node): RawImport[] {
   return imports
 }
 
-function extractCalls(query: Query, root: Node): CallSite[] {
+function extractCalls(query: Query, root: Node, enclosingSymbolNodes: string[]): CallSite[] {
   const calls: CallSite[] = []
   for (const match of query.matches(root)) {
     const callee = match.captures.find(c => c.name === 'callee')
@@ -397,7 +403,7 @@ function extractCalls(query: Query, root: Node): CallSite[] {
     calls.push({
       name: callee.node.text,
       line: callee.node.startPosition.row + 1,
-      enclosingSymbol: enclosingSymbolName(callee.node),
+      enclosingSymbol: enclosingSymbolName(callee.node, enclosingSymbolNodes),
       kind: site.name === 'new' ? 'instantiates' : 'calls',
     })
   }
@@ -408,11 +414,17 @@ function extractCalls(query: Query, root: Node): CallSite[] {
  * Walk up to the nearest enclosing function-like node and read its name. An
  * arrow function assigned to a variable takes the variable's name, which is
  * how `export const handler = () => {}` gets attributed to `handler`.
+ *
+ * `types` is the file's own language's `enclosingSymbolNodes`, declared in
+ * the registry (src/parser/languages.ts). It used to be one shared set in
+ * this file, which a new language could silently fail to extend -- leaving
+ * every `enclosingSymbol` null, which blinds `trace_flow` and `impact_of`
+ * while every other surface still looks correct.
  */
-function enclosingSymbolName(node: Node): string | null {
+function enclosingSymbolName(node: Node, types: string[]): string | null {
   let current = node.parent
   while (current) {
-    if (ENCLOSING_SYMBOL_NODES.has(current.type)) {
+    if (types.includes(current.type)) {
       const named = current.childForFieldName('name')
       if (named) return named.text
       if (current.parent?.type === 'variable_declarator') {

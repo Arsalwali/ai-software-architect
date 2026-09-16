@@ -1,27 +1,27 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { LANGUAGES } from '../parser/languages.js'
 
 /**
- * Conventional entry-file basenames. Shared by `overview.ts` (which lists
- * every detected entry point) and `impact.ts` (which checks whether a
+ * Conventional entry-file basenames: the union of every registered
+ * language's `entryBasenames` (src/parser/languages.ts). Held in the
+ * registry rather than as a literal here because omitting a language fails
+ * SILENTLY -- for the whole of the multi-language plan this list was
+ * JS-only, so `get_repo_overview` told every Go, Rust, Python and Java
+ * repository that it had no entry points, and `impact_of`'s
+ * `exportedFromEntryPoint` was false for every symbol in them.
+ *
+ * A union rather than a per-file language lookup, deliberately: the union
+ * is exactly what the flat literal was, so moving the data into the
+ * registry changed no answer for any path.
+ *
+ * Shared by `overview.ts` (which lists every detected entry point) and `impact.ts` (which checks whether a
  * matched symbol is exported from one) so the two surfaces can never
  * disagree about what counts as an entry point — they previously held
  * byte-identical copies of this set that drifted when only one of them
  * learned to also read `package.json`.
  */
-export const ENTRY_BASENAMES = new Set([
-  'index.ts', 'index.tsx', 'index.js', 'index.mjs',
-  'main.ts', 'main.js', 'server.ts', 'server.js', 'app.ts', 'app.js', 'cli.ts', 'cli.js',
-  // The four non-JS languages this index supports. Their absence was a
-  // silent failure, not a degraded one: `get_repo_overview` answered "this
-  // repository has no entry points" for a Go repo whose root holds
-  // `main.go`, and `impact_of`'s `exportedFromEntryPoint` was `false` for
-  // every symbol in those languages. `main.go` and `main.rs` are the
-  // compiler-mandated binary entry points for Go and Rust; `__main__.py` is
-  // what `python -m pkg` executes; `Main.java` is the near-universal
-  // convention for the class holding `public static void main`.
-  'main.go', 'main.rs', '__main__.py', 'Main.java',
-])
+export const ENTRY_BASENAMES = new Set(LANGUAGES.flatMap(language => language.entryBasenames))
 
 /**
  * Collects repo-relative entry-point paths declared in `package.json`:
