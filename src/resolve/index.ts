@@ -3,6 +3,7 @@ import type { Confidence } from '../types.js'
 import { javascriptResolver } from './javascript.js'
 import { pythonResolver } from './python.js'
 import { goResolver } from './go.js'
+import { javaResolver } from './java.js'
 
 export interface ResolvedImport {
   path: string | null
@@ -41,6 +42,7 @@ const RESOLVERS = new Map<string, ImportResolver>([
   [javascriptResolver.id, javascriptResolver],
   [pythonResolver.id, pythonResolver],
   [goResolver.id, goResolver],
+  [javaResolver.id, javaResolver],
 ])
 
 /**

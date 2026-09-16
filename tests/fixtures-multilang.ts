@@ -55,3 +55,41 @@ export const GO_FILES: Record<string, string> = {
 export function buildGoFixture(options: { git?: boolean } = {}): string {
   return build('arch-go-', GO_FILES, options.git ?? false)
 }
+
+/**
+ * Nested under a Maven-style `src/main/java` root so `sourceRootsFrom`
+ * (src/resolve/java.ts) is genuinely exercised rather than assumed: the
+ * resolver has to derive that prefix from the indexed paths, not from a
+ * hardcoded convention.
+ *
+ * `Helper` deliberately carries BOTH a public and a package-private method
+ * (`internal`), and `Runner` is an interface whose member has no modifier at
+ * all — together these exercise Java's "public OR interface member" export
+ * rule from both sides (see the ruling on `isExported` in
+ * src/parser/parser.ts). `Service` imports `Helper` by name AND imports
+ * `com.example.*` by wildcard; the wildcard import captures as the bare
+ * package name `com.example` (this grammar has no `.*`-suffixed specifier —
+ * see src/resolve/java.ts) and must resolve to `unresolved` end-to-end,
+ * since `com/example` names a directory, not a file.
+ */
+export const JAVA_FILES: Record<string, string> = {
+  'src/main/java/com/example/Helper.java':
+    'package com.example;\n\n' +
+    'public class Helper {\n' +
+    '  public static int help(int n) { return n + 1; }\n' +
+    '  static int internal(int n) { return n - 1; }\n' +
+    '}\n',
+  'src/main/java/com/example/Service.java':
+    'package com.example;\n\n' +
+    'import com.example.Helper;\n' +
+    'import com.example.*;\n\n' +
+    'public class Service {\n' +
+    '  public int place(int n) { return Helper.help(n); }\n' +
+    '}\n',
+  'src/main/java/com/example/Runner.java':
+    'package com.example;\n\npublic interface Runner {\n  void go();\n}\n',
+}
+
+export function buildJavaFixture(options: { git?: boolean } = {}): string {
+  return build('arch-java-', JAVA_FILES, options.git ?? false)
+}

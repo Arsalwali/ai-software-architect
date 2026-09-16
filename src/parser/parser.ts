@@ -87,6 +87,21 @@ const METHOD_CONTAINER_TYPES: Record<string, string[]> = {
   python: ['class_definition'],
 }
 
+/**
+ * Node types that count as a method's "enclosing class" for `parentName`,
+ * keyed by language id. Every language defaults to just `class_declaration`
+ * (see `enclosingClassName`'s fallback); Java overrides this because its
+ * grammar also lets a method live directly in an `interface_declaration` or
+ * an `enum_declaration` body, and `parentName` should name that container
+ * too — an interface's method is still "a member of Runner", not parentless.
+ * Scoped by language, not applied globally, so TypeScript/JavaScript,
+ * Python and Go's `parentName` behaviour is unaffected.
+ */
+const ENCLOSING_CLASS_TYPES: Record<string, string[]> = {
+  java: ['class_declaration', 'interface_declaration', 'enum_declaration'],
+}
+const DEFAULT_ENCLOSING_CLASS_TYPES = ['class_declaration']
+
 function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[] {
   const methodContainers = METHOD_CONTAINER_TYPES[langId]
   const symbols: SourceSymbol[] = []
@@ -100,7 +115,7 @@ function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[
     let parentName: string | null = null
 
     if (kind === 'method') {
-      parentName = langId === 'go' ? goReceiverTypeName(node) : enclosingClassName(node)
+      parentName = langId === 'go' ? goReceiverTypeName(node) : enclosingClassName(node, langId)
     } else if (kind === 'function' && methodContainers) {
       const container = enclosingContainerOfType(node, methodContainers)
       if (container) {
@@ -159,6 +174,7 @@ function enclosingContainerOfType(node: Node, types: string[]): Node | null {
 function isExported(node: Node, langId: string, name: string): boolean {
   if (langId === 'python') return node.parent?.type === 'module'
   if (langId === 'go') return isGoExportedName(name)
+  if (langId === 'java') return isJavaExported(node)
 
   let current: Node | null = node
   for (let depth = 0; current && depth < 3; depth++) {
@@ -166,6 +182,28 @@ function isExported(node: Node, langId: string, name: string): boolean {
     current = current.parent
   }
   return false
+}
+
+/**
+ * Java's export rule: a declaration is part of a file's importable surface
+ * iff it carries an explicit `public` modifier, OR its enclosing type is an
+ * interface — interface members are implicitly public regardless of any
+ * modifier, and an explicit-`public`-only rule would wrongly mark every
+ * interface method `exported: false`, silently producing zero cross-file
+ * call edges into any interface (the exact failure this project's Python
+ * support hit before its own export rule was corrected).
+ *
+ * `public` is detected by walking the `modifiers` node's own children and
+ * testing `child.type === 'public'` — never by substring-matching the
+ * modifiers' text, which would false-positive on an annotation such as
+ * `@PublicApi`. A declaration with no modifier at all (package-private, or
+ * an interface member) has no `modifiers` node as a child at all in this
+ * grammar, not an empty one.
+ */
+function isJavaExported(node: Node): boolean {
+  const modifiers = node.children.find(child => child?.type === 'modifiers') ?? null
+  if (modifiers && modifiers.children.some(child => child?.type === 'public')) return true
+  return enclosingContainerOfType(node, ['interface_declaration']) !== null
 }
 
 /**
@@ -186,10 +224,11 @@ function signatureOf(node: Node): string | null {
   return text.length > 0 ? text.slice(0, 300) : null
 }
 
-function enclosingClassName(node: Node): string | null {
+function enclosingClassName(node: Node, langId: string): string | null {
+  const types = ENCLOSING_CLASS_TYPES[langId] ?? DEFAULT_ENCLOSING_CLASS_TYPES
   let current = node.parent
   while (current) {
-    if (current.type === 'class_declaration') {
+    if (types.includes(current.type)) {
       return current.childForFieldName('name')?.text ?? null
     }
     current = current.parent
