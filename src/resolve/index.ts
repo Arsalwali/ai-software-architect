@@ -4,6 +4,7 @@ import { javascriptResolver } from './javascript.js'
 import { pythonResolver } from './python.js'
 import { goResolver } from './go.js'
 import { javaResolver } from './java.js'
+import { rustResolver } from './rust.js'
 
 export interface ResolvedImport {
   path: string | null
@@ -43,6 +44,7 @@ const RESOLVERS = new Map<string, ImportResolver>([
   [pythonResolver.id, pythonResolver],
   [goResolver.id, goResolver],
   [javaResolver.id, javaResolver],
+  [rustResolver.id, rustResolver],
 ])
 
 /**

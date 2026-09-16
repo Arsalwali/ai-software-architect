@@ -80,11 +80,20 @@ function readQuery(def: LanguageDef, name: string): string {
  * need an entry: there, a method parses as an ordinary function nested in a
  * class body, so `symbols.scm` alone cannot tell it apart and this ancestry
  * check does. TypeScript/JavaScript already capture methods explicitly via
- * `def.method` in their query and need no entry here — Rust will add one
- * for `impl_item` in a later task.
+ * `def.method` in their query and need no entry here.
+ *
+ * Rust's `trait_item` sits alongside `impl_item`: a DEFAULT method body
+ * inside a `trait` (`fn go(&self) { ... }`) parses as an ordinary
+ * `function_item`, identically to one inside `impl`, and would silently
+ * misclassify as a top-level function without it. (A trait method with no
+ * body, e.g. `fn go(&self);`, parses as a distinct `function_signature_item`
+ * that this project's symbols.scm does not capture at all, so this entry
+ * only ever fires for a trait's default methods — verified against the real
+ * grammar.)
  */
 const METHOD_CONTAINER_TYPES: Record<string, string[]> = {
   python: ['class_definition'],
+  rust: ['impl_item', 'trait_item'],
 }
 
 /**
@@ -131,7 +140,7 @@ function extractSymbols(query: Query, root: Node, langId: string): SourceSymbol[
       const container = enclosingContainerOfType(node, methodContainers)
       if (container) {
         kind = 'method'
-        parentName = container.childForFieldName('name')?.text ?? null
+        parentName = containerName(container)
       }
     }
 
@@ -156,6 +165,21 @@ function enclosingContainerOfType(node: Node, types: string[]): Node | null {
     current = current.parent
   }
   return null
+}
+
+/**
+ * Names a method's promoted container, preferring the `name` field and
+ * falling back to the `type` field when there is no `name`.
+ *
+ * Every container Python and TypeScript promote through this mechanism has
+ * a `name` field, so the fallback never fires for them. Rust's `impl_item`
+ * is the exception this exists for: `impl Service { ... }` has NO `name`
+ * field at all (verified against the real grammar) — the type being
+ * implemented is carried in a `type` field instead. `trait_item` is
+ * unaffected (it has a normal `name` field) and takes the first branch.
+ */
+function containerName(container: Node): string | null {
+  return container.childForFieldName('name')?.text ?? container.childForFieldName('type')?.text ?? null
 }
 
 /**
@@ -186,6 +210,7 @@ function isExported(node: Node, langId: string, name: string): boolean {
   if (langId === 'python') return node.parent?.type === 'module'
   if (langId === 'go') return isGoExportedName(name)
   if (langId === 'java') return isJavaExported(node)
+  if (langId === 'rust') return isRustExported(node)
 
   let current: Node | null = node
   for (let depth = 0; current && depth < 3; depth++) {
@@ -253,6 +278,23 @@ function isGoExportedName(name: string): boolean {
   return first !== '' && first === first.toUpperCase() && first !== first.toLowerCase()
 }
 
+/**
+ * Rust's export rule (ruling on Task 5): a declaration is part of the
+ * crate's importable surface iff it has a direct child of type
+ * `visibility_modifier` — verified against the real grammar
+ * (tree-sitter-rust.wasm) for `function_item` and `struct_item`.
+ *
+ * Tested by NODE TYPE, not by the modifier's text: `pub(crate)` and
+ * `pub(super)` are also `visibility_modifier` nodes and are genuinely part
+ * of the importable surface within the crate, which is the surface this
+ * index models. `pub(self)` is technically private and this rule counts it
+ * as exported — a deliberate, documented false positive rather than added
+ * complexity for a vanishingly rare case.
+ */
+function isRustExported(node: Node): boolean {
+  return node.children.some(child => child?.type === 'visibility_modifier')
+}
+
 function signatureOf(node: Node): string | null {
   const body = node.childForFieldName('body')
   const end = body ? body.startIndex : node.endIndex
@@ -301,6 +343,10 @@ const ENCLOSING_SYMBOL_NODES = new Set([
   // distinct node type from function_declaration, so it needs its own
   // entry here too; it shapes its `name` field identically.
   'method_declaration',
+  // Rust's `function_item` is both a free function and (nested inside an
+  // `impl_item`/`trait_item`) a method — one node type covers both, like
+  // Python's `function_definition`, and it has a normal `name` field.
+  'function_item',
 ])
 
 function extractImports(query: Query, root: Node): RawImport[] {

@@ -93,3 +93,24 @@ export const JAVA_FILES: Record<string, string> = {
 export function buildJavaFixture(options: { git?: boolean } = {}): string {
   return build('arch-java-', JAVA_FILES, options.git ?? false)
 }
+
+/**
+ * `main.rs`'s `fn main()` is deliberately NOT `pub` — Rust's export rule is
+ * "has a visibility_modifier child" (see the ruling on `isExported` in
+ * src/parser/parser.ts), and a fixture where everything is `pub` cannot
+ * distinguish that rule from `return true`. `main` is the non-pub function
+ * this fixture exercises for that.
+ */
+export const RUST_FILES: Record<string, string> = {
+  'src/helper.rs': 'pub fn help(n: i32) -> i32 {\n    n + 1\n}\n',
+  'src/service.rs':
+    'use crate::helper::help;\n\npub struct Service {\n    pub n: i32,\n}\n\n' +
+    'impl Service {\n    pub fn place(&self) -> i32 {\n        help(self.n)\n    }\n}\n',
+  'src/main.rs':
+    'mod helper;\nmod service;\n\nuse crate::service::Service;\n\n' +
+    'fn main() {\n    let s = Service { n: 2 };\n    println!("{}", s.place());\n}\n',
+}
+
+export function buildRustFixture(options: { git?: boolean } = {}): string {
+  return build('arch-rs-', RUST_FILES, options.git ?? false)
+}
