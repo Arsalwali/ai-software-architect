@@ -68,7 +68,10 @@ the default.
   and symbol totals, languages, top-level modules, detected entry points,
   skipped files by reason, and the edge confidence breakdown. Start here.
 - `describe_module` — a module's files, exported surface, dependencies and
-  dependents with weights, and coupling metrics.
+  dependents with weights, and coupling metrics. Covers only files directly
+  inside the named directory; files in a nested directory belong to their
+  own module. `subModules` lists those nested module paths so you can query
+  each one in turn.
 
 **Search and navigation**
 

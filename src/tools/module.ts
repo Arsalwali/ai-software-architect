@@ -65,7 +65,7 @@ export function describeModule(store: GraphStore, options: ModuleOptions): Modul
     .sort()
 
   if (files.length === 0) {
-    return {
+    const base = {
       module: target,
       files: [],
       subModules,
@@ -75,6 +75,27 @@ export function describeModule(store: GraphStore, options: ModuleOptions): Modul
       coupling: null,
       summary: null,
       summaryUnavailableReason: SUMMARY_UNAVAILABLE,
+    }
+
+    // Two genuinely different situations share `files.length === 0`, and
+    // must never be reported the same way: a path with real sub-modules
+    // below it is not "may not exist" -- it plainly does, it just owns no
+    // files directly. Naming a real child directory while also saying the
+    // directory may not exist would contradict itself in the same response.
+    if (subModules.length > 0) {
+      const additionalFiles = subModules.reduce(
+        (sum, m) => sum + (graph.filesByModule.get(m)?.length ?? 0), 0,
+      )
+      return {
+        ...base,
+        note: `"${target}" owns no files directly. ${additionalFiles} file(s) live in ` +
+          `${subModules.length} sub-module(s): ${subModules.join(', ')}. Call describe_module ` +
+          `on one of those paths to see them.`,
+      }
+    }
+
+    return {
+      ...base,
       note: `No indexed files under "${target}". It may not exist, or its files may have ` +
         `been skipped at index time.`,
     }

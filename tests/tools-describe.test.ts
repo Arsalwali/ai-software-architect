@@ -116,7 +116,37 @@ describe('describeModule', () => {
   it('explains an unknown module rather than returning an empty success', () => {
     const r = describeModule(store, { path: 'src/nowhere', limit: 50 })
     expect(r.files).toEqual([])
+    // A genuinely absent path has no sub-modules either -- if a regression
+    // made this branch always report the sub-module note, `subModules`
+    // would still come back empty here, since nothing in the fixture is
+    // nested under "src/nowhere". Asserting it stays empty is what makes
+    // this test able to fail such a regression instead of just re-checking
+    // the "no indexed files" wording in isolation.
+    expect(r.subModules).toEqual([])
     expect(r.note).toMatch(/no indexed files/i)
+  })
+
+  it('reports files-live-below instead of "may not exist" when a directory has no direct files but real sub-modules', () => {
+    // "src/parser/queries" style case: a directory that owns no files of
+    // its own but has real children with files. The zero-direct-files
+    // early return must not reuse the "may not exist" wording here -- that
+    // would simultaneously name a real child directory and claim the
+    // parent might not exist, which is a self-contradiction.
+    const s = GraphStore.open(':memory:')
+    s.insertParsedFiles([
+      symbolFile('parent/child/a.ts', [exportedFn('a')]),
+      symbolFile('parent/child/b.ts', [exportedFn('b')]),
+    ])
+    const r = describeModule(s, { path: 'parent', limit: 50 })
+    expect(r.files).toEqual([])
+    expect(r.subModules).toEqual(['parent/child'])
+    expect(r.note).toBeDefined()
+    expect(r.note).not.toMatch(/may not exist/i)
+    expect(r.note).toMatch(/parent\/child/)
+    // The note must carry the true count of files living below, not just
+    // name the sub-module and leave the reader to guess how much is there.
+    expect(r.note).toMatch(/2/)
+    s.close()
   })
 
   it('names its sub-modules and warns that they are excluded, when a directory has them', () => {

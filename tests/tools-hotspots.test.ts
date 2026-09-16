@@ -225,3 +225,27 @@ describe('findHotspots without git', () => {
     store.close()
   })
 })
+
+describe('findHotspots when every file reports zero loc', () => {
+  it('points at "arch index --force", not "--full", and does not claim to know why', () => {
+    // A schema-version-1 index (predating loc collection) can never reach
+    // this branch in practice -- GraphStore's version guard refuses to even
+    // open it, and only "--force" gets past that guard. "--full" cannot, so
+    // advising it here is dead advice. Whatever actually zeroes every loc
+    // (e.g. a repo of empty/unparsed files), the note must describe the
+    // observation and the one command that helps, not a presumed cause.
+    const s = GraphStore.open(':memory:')
+    s.insertParsedFiles([
+      { path: 'a.ts', lang: 'typescript', contentHash: 'ha', loc: 0, symbols: [], imports: [], callSites: [], errors: [] },
+      { path: 'b.ts', lang: 'typescript', contentHash: 'hb', loc: 0, symbols: [], imports: [], callSites: [], errors: [] },
+    ])
+    const repoRoot = mkdtempSync(join(tmpdir(), 'arch-hot-nogit-'))
+    const r = findHotspots(s, repoRoot, { limit: 10 })
+    expect(r.hotspots.length).toBeGreaterThan(0)
+    expect(r.note).toMatch(/0 lines of code/i)
+    expect(r.note).toMatch(/arch index --force/)
+    expect(r.note).not.toMatch(/--full/)
+    expect(r.note).not.toMatch(/predates/i)
+    s.close()
+  })
+})

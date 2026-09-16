@@ -170,18 +170,23 @@ export function findHotspots(
       `rather than as a debt ranking.`,
     )
   }
-  // `loc` was persisted as 0 for every file before this plan's schema
-  // change, and an existing index does not get the new value until it is
-  // fully rebuilt (incremental reindex never re-parses an unchanged file).
   // A zeroed `loc` silently drops the size half of the structural signal
   // out of every score, which changes the ranking and can knock genuinely
   // large files out of the top results entirely -- so this must be labelled
   // rather than left to look like an ordinary, complete ranking.
+  //
+  // Deliberately does NOT diagnose a cause. An index built before line-count
+  // collection was added is schema version 1, and the version guard in
+  // GraphStore refuses to even open it -- it demands "arch index --force"
+  // before any tool (this one included) can run at all. So a pre-schema-bump
+  // index can never reach this branch, and "--full" cannot help it get past
+  // the guard anyway. If this note fires, it's for some other reason (e.g. a
+  // repository of empty or unparsed files) that this code cannot know, so it
+  // reports the observation and the one command that forces a clean rebuild.
   if (rows.length > 0 && rows.every(r => r.loc === 0)) {
     notes.push(
       'Every indexed file reports 0 lines of code, so the size half of the structural signal ' +
-      'is unavailable -- this index predates line-count collection. Run "arch index --full" ' +
-      'to rebuild it and restore accurate rankings.',
+      'contributed nothing to this ranking. Run "arch index --force" to force a clean rebuild.',
     )
   }
 

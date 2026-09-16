@@ -207,8 +207,10 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
     title: 'Describe a module',
     description:
       'A module\'s files, exported surface, dependencies and dependents with weights, and ' +
-      'coupling metrics. `summary` is null until the summarizer is built; ' +
-      '`summaryUnavailableReason` explains why.',
+      'coupling metrics. Covers only files directly inside the named directory -- files in a ' +
+      'nested directory belong to their own module and are not included here. `subModules` ' +
+      'lists those nested module paths so you can call this tool again on each one. `summary` ' +
+      'is null until the summarizer is built; `summaryUnavailableReason` explains why.',
     inputSchema: {
       repo: repoArg,
       path: z.string().min(1).describe('Directory path of the module to describe.'),
