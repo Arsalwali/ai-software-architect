@@ -87,8 +87,33 @@ describe('java parsing', () => {
     expect(call.kind).toBe('calls')
   })
 
-  it('counts lines', () => {
-    expect(parser.parse('Runner.java', RUNNER_SOURCE).loc).toBe(5)
+  it('counts lines in a file actually recognised as java', () => {
+    // `loc` alone is computed before language dispatch (see RepoParser.parse
+    // in src/parser/parser.ts), so a loc-only assertion here would still
+    // pass even with Java support deleted entirely — the reviewer proved
+    // this against `Runner.zzz`. Asserting `lang` in the SAME test closes
+    // that gap: delete Java support and this test fails, because `lang`
+    // reverts to `null`.
+    const parsed = parser.parse('Runner.java', RUNNER_SOURCE)
+    expect(parsed.lang).toBe('java')
+    expect(parsed.loc).toBe(5)
+  })
+
+  it('does not export a method through a nested type\'s enclosing interface', () => {
+    // Only the NEAREST enclosing type governs the implicit-public rule.
+    // `hidden` is private and lives in `class Inner`, which happens to be
+    // nested inside `interface Outer` — but `Inner` is a class, not an
+    // interface, so `hidden` must NOT inherit Outer's implicit-public
+    // treatment. See task-4-fixes.md finding 5.
+    const NESTED_SOURCE =
+      'package com.example;\n\n' +
+      'public interface Outer {\n' +
+      '  class Inner {\n' +
+      '    private int hidden() { return 1; }\n' +
+      '  }\n' +
+      '}\n'
+    const hidden = parser.parse('Outer.java', NESTED_SOURCE).symbols.find(s => s.name === 'hidden')!
+    expect(hidden.exported).toBe(false)
   })
 })
 

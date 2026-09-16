@@ -186,12 +186,19 @@ function isExported(node: Node, langId: string, name: string): boolean {
 
 /**
  * Java's export rule: a declaration is part of a file's importable surface
- * iff it carries an explicit `public` modifier, OR its enclosing type is an
- * interface — interface members are implicitly public regardless of any
- * modifier, and an explicit-`public`-only rule would wrongly mark every
- * interface method `exported: false`, silently producing zero cross-file
- * call edges into any interface (the exact failure this project's Python
- * support hit before its own export rule was corrected).
+ * iff it carries an explicit `public` modifier, OR its NEAREST enclosing
+ * type declaration is an interface — interface members are implicitly
+ * public regardless of any modifier, and an explicit-`public`-only rule
+ * would wrongly mark every interface method `exported: false`, silently
+ * producing zero cross-file call edges into any interface (the exact
+ * failure this project's Python support hit before its own export rule was
+ * corrected).
+ *
+ * "Nearest" matters: `interface Outer { class Inner { private int
+ * hidden() {} } }` must NOT export `hidden` just because Outer, several
+ * levels up, is an interface. Only `Inner` (a class) governs `hidden`, so
+ * the walk stops at the first type declaration it finds rather than
+ * continuing to ask whether any ancestor, at any depth, is an interface.
  *
  * `public` is detected by walking the `modifiers` node's own children and
  * testing `child.type === 'public'` — never by substring-matching the
@@ -203,7 +210,8 @@ function isExported(node: Node, langId: string, name: string): boolean {
 function isJavaExported(node: Node): boolean {
   const modifiers = node.children.find(child => child?.type === 'modifiers') ?? null
   if (modifiers && modifiers.children.some(child => child?.type === 'public')) return true
-  return enclosingContainerOfType(node, ['interface_declaration']) !== null
+  const nearestType = enclosingContainerOfType(node, ENCLOSING_CLASS_TYPES.java)
+  return nearestType?.type === 'interface_declaration'
 }
 
 /**
