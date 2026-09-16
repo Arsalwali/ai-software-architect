@@ -64,16 +64,18 @@ export function sourceRootsFrom(knownPaths: Set<string>): Set<string> {
 }
 
 /**
- * True iff `root` is a path-PREFIX of `path` at a segment boundary — i.e.
- * `root` is `path` itself, or `path` continues immediately after `root`
- * with a `/`. Plain `startsWith` would wrongly accept `'src/ma'` as a
- * prefix of `'src/main/...'`; requiring the boundary rules that out. The
- * empty root is a prefix of everything (a flat layout has no root
- * segments to fail to match).
+ * Number of leading path segments `a` and `b` share, compared
+ * SEGMENT-by-segment rather than character-by-character: `'moduleA'` and
+ * `'moduleAB'` share zero segments even though they share a long common
+ * character prefix, because as path segments they are simply different
+ * directory names.
  */
-function isPathPrefix(root: string, path: string): boolean {
-  if (root === '') return true
-  return path === root || path.startsWith(`${root}/`)
+function sharedLeadingSegments(a: string, b: string): number {
+  const as = a.split('/')
+  const bs = b.split('/')
+  let n = 0
+  while (n < as.length && n < bs.length && as[n] === bs[n]) n++
+  return n
 }
 
 /**
@@ -86,42 +88,56 @@ function isPathPrefix(root: string, path: string): boolean {
  * Maven/Gradle module, plus a `main`/`test` split within each). So instead
  * of returning on the first matching root, this collects EVERY candidate
  * path that exists in `knownPaths` across every root from
- * `sourceRootsFrom`, then picks among them:
+ * `sourceRootsFrom`, then RANKS them by how many leading path segments
+ * they share with `fromPath` (`sharedLeadingSegments`):
  *
- * 1. Partition the candidates into those whose root is a path-prefix of
- *    `fromPath` ("same-root" — plausibly the importing file's own module)
- *    and those that aren't ("other").
- * 2. Exactly one same-root candidate -> `resolved` to it: the importing
- *    file's own module has exactly one file that could satisfy this FQN.
- * 3. Several same-root candidates -> `ambiguous`: more than one file in
- *    the importer's own module claims this FQN, and nothing here can tell
- *    them apart.
- * 4. No same-root candidate: fall back to the "other" bucket with the same
- *    exactly-one/several/none rule. This is what makes a Maven `main`/
- *    `test` split work — a test file has no source-root candidate of its
- *    own for a main-tree class, so it correctly falls through to the
- *    single real candidate under `src/main/java`.
+ * - A unique maximum -> `resolved` to that candidate: it is the closest
+ *   match to the importing file's own location, by construction the most
+ *   plausible "this is the same module/source-set" candidate.
+ * - Several candidates tied at the maximum -> `ambiguous`.
+ * - No candidates at all -> `unresolved`.
+ *
+ * An earlier version of this rule (fix round 1) partitioned candidates
+ * into two buckets — "same root as `fromPath`" vs "other" — rather than
+ * ranking them. That partition could not tell a per-module `main`/`test`
+ * split apart from a genuinely unrelated module: a module's own `test`
+ * root is never a path-ancestor of that SAME module's `main` root (they
+ * are siblings), so the partition treated "my own module's main class"
+ * and "some other module's same-named class" identically once the
+ * importer was itself under a `test` root, and both fell into the same
+ * "other" bucket — producing `ambiguous` where the importer's own module
+ * should have won outright. A single ranking by shared leading segments
+ * fixes this directly: the importer's own module necessarily shares more
+ * leading segments (e.g. `moduleB/src`) than an unrelated module does
+ * (0), without needing a same-root/other split at all. This subsumes the
+ * round-1 partition and its longest-root-first tiebreak, so both are
+ * deleted rather than kept alongside the new rule.
  *
  * `ResolvedImport` holds a single `path`, so an `ambiguous` result cannot
  * list every candidate the way call resolution can — it reports the
- * lexicographically-first candidate alongside the `ambiguous` flag rather
- * than `path: null`. `null` would make `ambiguous` and `unresolved`
- * indistinguishable in the graph, silently re-collapsing the two tiers
- * this project does real work to keep apart; `CONFIDENCE_RANK` already
- * ranks `ambiguous` below `heuristic` so downstream tools discount it. The
- * sort is not cosmetic: it is what makes the chosen path deterministic
- * across machines and across a cold vs. incremental run, rather than
- * hostage to `Set`/filesystem iteration order.
+ * lexicographically-first tied candidate alongside the `ambiguous` flag
+ * rather than `path: null`. `null` would make `ambiguous` and
+ * `unresolved` indistinguishable in the graph, silently re-collapsing the
+ * two tiers this project does real work to keep apart; `CONFIDENCE_RANK`
+ * already ranks `ambiguous` below `heuristic` so downstream tools
+ * discount it. The sort is not cosmetic: it is what makes the chosen path
+ * deterministic across machines and across a cold vs. incremental run,
+ * rather than hostage to `Set`/filesystem iteration order.
  *
  * HONEST LIMITATION: this is a path-pattern approximation, not a real
  * classpath resolver — it never reads a file's own `package` declaration,
- * because nothing upstream of this resolver parses that far ahead of time.
- * Two files in different modules can each legitimately claim the same FQN
- * (or, rarer, a coincidental directory layout can make an unrelated file
- * look like a match — see task-4-fixes.md finding 2), and this resolver
- * cannot always tell them apart. Where it can't, it reports `ambiguous`
- * rather than guessing — failing loudly instead of silently returning a
- * confident wrong answer.
+ * because nothing upstream of this resolver parses that far ahead of
+ * time. Two files in different modules can each legitimately claim the
+ * same FQN, and a coincidental directory layout can make an unrelated
+ * file look like an equally good match (see task-4-fixes.md finding 2 and
+ * task-4-fixes-round2.md: when a "coincidental deeper" file's path is
+ * exactly the real file's directory plus one extra segment before its own
+ * filename, it necessarily TIES with the real file on shared-leading-
+ * segments for every possible `fromPath` — it can never score strictly
+ * lower, only tie or win — so that shape of collision always reports
+ * `ambiguous`, not a silent pick either way). Where this resolver can't
+ * tell candidates apart, it reports `ambiguous` rather than guessing —
+ * failing loudly instead of silently returning a confident wrong answer.
  *
  * A wildcard import (`import com.example.*;`) names a package, not a
  * class, so it can never identify one file — resolving it would be a
@@ -154,18 +170,26 @@ export const javaResolver: ImportResolver = {
     const relative = specifier.split('.').join('/') + '.java'
     const roots = sortedRootsFrom(knownPaths)
 
-    const sameRoot: string[] = []
-    const other: string[] = []
+    const candidates: string[] = []
     for (const root of roots) {
       const candidate = root.length === 0 ? relative : `${root}/${relative}`
-      if (!knownPaths.has(candidate)) continue
-      ;(isPathPrefix(root, fromPath) ? sameRoot : other).push(candidate)
+      if (knownPaths.has(candidate)) candidates.push(candidate)
+    }
+    if (candidates.length === 0) return UNRESOLVED
+
+    let bestScore = -1
+    let winners: string[] = []
+    for (const candidate of candidates) {
+      const score = sharedLeadingSegments(fromPath, candidate)
+      if (score > bestScore) {
+        bestScore = score
+        winners = [candidate]
+      } else if (score === bestScore) {
+        winners.push(candidate)
+      }
     }
 
-    const bucket = sameRoot.length > 0 ? sameRoot : other
-    if (bucket.length === 0) return UNRESOLVED
-
-    const sorted = [...bucket].sort()
-    return { path: sorted[0], confidence: bucket.length === 1 ? 'resolved' : 'ambiguous' }
+    const sorted = [...winners].sort()
+    return { path: sorted[0], confidence: winners.length === 1 ? 'resolved' : 'ambiguous' }
   },
 }
