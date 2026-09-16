@@ -26,14 +26,35 @@ const MAIN_SOURCE =
   'mod helper;\nmod service;\n\nuse crate::service::Service;\n\n' +
   'fn main() {\n    let s = Service { n: 2 };\n    println!("{}", s.place());\n}\n'
 
-// Exercises enum_item, type_item and trait_item, none of which appear in
-// the end-to-end fixture. All three node names and their symbols.scm
-// patterns were verified against the real grammar (tree-sitter-rust.wasm)
-// with a throwaway probe before being relied on.
+// Exercises enum_item, type_item and trait_item AS SYMBOLS, none of which
+// appear in the end-to-end fixture. All three node names and their
+// symbols.scm patterns were verified against the real grammar
+// (tree-sitter-rust.wasm) with a throwaway probe before being relied on.
+//
+// It does NOT exercise `trait_item`'s OTHER role, as a
+// METHOD_CONTAINER_TYPES.rust entry (final-fixes.md item 5): `fn go(&self);`
+// is bodiless, so it parses as a `function_signature_item`, which
+// symbols.scm never captures -- nothing here ever reaches the container
+// promotion. TRAIT_DEFAULT_SOURCE below is what covers that.
 const KINDS_SOURCE =
   'pub enum Color {\n    Red,\n    Green,\n}\n\n' +
   'pub type Alias = i32;\n\n' +
   'pub trait Runner {\n    fn go(&self);\n}\n'
+
+// A trait method WITH A DEFAULT BODY. Verified against the real grammar:
+// this parses as a `function_item` nested in `trait_item` -- structurally
+// identical to a method inside an `impl_item`, and indistinguishable from a
+// free function by symbols.scm alone. Only METHOD_CONTAINER_TYPES.rust's
+// `trait_item` entry (src/parser/parser.ts) tells them apart, so without
+// it `go` is reported as a top-level `function` with no parent. `required`
+// is deliberately kept bodiless alongside it: it parses as a
+// `function_signature_item`, which symbols.scm does not capture at all,
+// and asserting its absence pins the boundary between the two.
+const TRAIT_DEFAULT_SOURCE =
+  'pub trait Runner {\n' +
+  '    fn go(&self) -> i32 {\n        1\n    }\n\n' +
+  '    fn required(&self) -> i32;\n' +
+  '}\n'
 
 let parser: RepoParser
 beforeAll(async () => { parser = await RepoParser.create() })
@@ -55,6 +76,19 @@ describe('rust parsing', () => {
     const kindsNames = parser.parse('kinds.rs', KINDS_SOURCE).symbols
       .map(s => `${s.kind}:${s.name}`).sort()
     expect(kindsNames).toEqual(['enum:Color', 'interface:Runner', 'type:Alias'])
+  })
+
+  it('promotes a trait method with a DEFAULT BODY to a method of that trait (final-fixes.md item 5)', () => {
+    const symbols = parser.parse('runner.rs', TRAIT_DEFAULT_SOURCE).symbols
+    // `go` is a `function_item`, exactly like a free function; only
+    // METHOD_CONTAINER_TYPES.rust's `trait_item` entry makes it a method.
+    const go = symbols.find(s => s.name === 'go')!
+    expect(go.kind).toBe('method')
+    expect(go.parentName).toBe('Runner')
+    // And the bodiless sibling stays uncaptured, so this test cannot pass
+    // by the query suddenly capturing every trait member.
+    expect(symbols.map(s => `${s.kind}:${s.name}`).sort())
+      .toEqual(['interface:Runner', 'method:go'])
   })
 
   it('attributes an impl method to its struct via parentName (Ruling 3: impl_item has no name field, only type)', () => {
