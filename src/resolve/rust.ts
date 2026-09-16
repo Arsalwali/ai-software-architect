@@ -36,32 +36,79 @@ function moduleDirOf(path: string): string {
   return dir.length > 0 ? `${dir}/${stem}` : stem
 }
 
+function dirnameOf(path: string): string {
+  const cut = path.lastIndexOf('/')
+  return cut === -1 ? '' : path.slice(0, cut)
+}
+
 function parentDirOf(dir: string): string {
   const cut = dir.lastIndexOf('/')
   return cut === -1 ? '' : dir.slice(0, cut)
 }
 
 /**
- * The crate root directory: the directory containing an indexed `main.rs`
- * or `lib.rs`, derived from the indexed paths rather than assumed to be
- * `src` — a workspace member or an unusual layout still resolves this way.
- * Falls back to `src` when neither is indexed (e.g. a crate root file was
- * excluded from the index, or a fixture that never wrote one).
+ * Every directory, across the whole indexed path set, that directly
+ * contains a `main.rs` or `lib.rs` — i.e. every crate root a workspace (or
+ * an ordinary Cargo layout with a `src/bin/<name>/main.rs` binary target)
+ * can contain. Computed once per `knownPaths` identity and cached, since a
+ * fresh scan of every indexed path on every `resolve()` call would be
+ * O(files x imports) on a large repo — the same reasoning as `go.ts`'s
+ * `go.mod`-prefix cache, just keyed by the path-set object instead of a
+ * repo root string (there is no single file to read here; the "root" is
+ * discovered by scanning the index itself).
  */
-function crateRootDir(knownPaths: Set<string>): string {
+const crateRootDirsCache = new WeakMap<Set<string>, Set<string>>()
+
+function crateRootDirsFrom(knownPaths: Set<string>): Set<string> {
+  let cached = crateRootDirsCache.get(knownPaths)
+  if (cached) return cached
+
+  cached = new Set<string>()
   for (const path of knownPaths) {
     const cut = path.lastIndexOf('/')
     const base = cut === -1 ? path : path.slice(cut + 1)
-    if (base === 'main.rs' || base === 'lib.rs') return cut === -1 ? '' : path.slice(0, cut)
+    if (base === 'main.rs' || base === 'lib.rs') cached.add(cut === -1 ? '' : path.slice(0, cut))
   }
-  return 'src'
+  crateRootDirsCache.set(knownPaths, cached)
+  return cached
 }
 
 /**
- * Tries a module directory's two possible on-disk forms — `<dir>.rs` and
- * `<dir>/mod.rs` — as well as `<dir>` itself joined onto a segment list is
- * not something this function does; it purely renders one already-joined
- * module path into its two candidate files.
+ * The crate root for `crate::` paths, resolved PER IMPORTING FILE rather
+ * than once globally.
+ *
+ * The naive "first `main.rs`/`lib.rs` found while scanning the whole index"
+ * is wrong two ways at once: in a Cargo workspace it can resolve a
+ * `crate::` path from one member crate into a completely different
+ * sibling crate (a confident wrong answer across a crate boundary), and
+ * because `Set` iteration order follows insertion order, which crate wins
+ * is non-deterministic across cold vs. incremental indexing runs that
+ * build the path set differently.
+ *
+ * The correct rule: walk upward from the importing file's own directory
+ * and take the NEAREST ancestor directory that is a crate root. This
+ * naturally scopes `crate::` to the importing file's own crate (a
+ * workspace member's own `src/lib.rs`, or a `src/bin/<name>/main.rs`
+ * binary target, which is correctly its own crate root under real Cargo
+ * semantics) without needing to know the workspace layout in advance.
+ * Falls back to `src` only when the walk finds no crate root at all.
+ */
+function crateRootDirFor(fromPath: string, knownPaths: Set<string>): string {
+  const roots = crateRootDirsFrom(knownPaths)
+  let dir = dirnameOf(fromPath)
+  for (;;) {
+    if (roots.has(dir)) return dir
+    if (dir === '') return 'src'
+    dir = parentDirOf(dir)
+  }
+}
+
+/**
+ * The two on-disk forms one module path can take: `<path>.rs` (a plain
+ * module file) or `<path>/mod.rs` (a module with its own submodules). Both
+ * are legal for the same module path — `mod foo;` can be satisfied by
+ * either — so both are checked; `resolve` below decides what to do when
+ * BOTH happen to be indexed at once (see the `ambiguous` handling there).
  */
 function candidatesFor(modulePath: string): string[] {
   return [`${modulePath}.rs`, `${modulePath}/mod.rs`]
@@ -77,36 +124,52 @@ function candidatesFor(modulePath: string): string[] {
  * segment is a module or an item, it tries the full path as a module first
  * (longer form, so a real `crate::helper::helper` module is not shadowed by
  * a coincidental shorter match), then the path with its last segment
- * dropped.
+ * dropped. This item-drop fallback does NOT apply to a `::*` glob import
+ * (see below) — a glob names a module, definitively, never an item.
  *
- * `crate::` starts at the crate root (derived from indexed `main.rs`/
- * `lib.rs`, see `crateRootDir`). `self::` is the importing file's own
- * module directory; `super::` is one level above it — both via
- * `moduleDirOf`, which is NOT simply "the file's containing directory" (see
- * its own doc comment). A leading segment that is none of `crate`, `self`
- * or `super` names an external crate (std or third-party) and is
- * `unresolved` immediately — there is nothing in this repository it could
- * ever resolve to.
+ * `crate::` starts at the importing file's own crate root (see
+ * `crateRootDirFor` — resolved per file, not globally, to stay correct in
+ * a workspace). `self::` is the importing file's own module directory;
+ * `super::` is one level above it — both via `moduleDirOf`, which is NOT
+ * simply "the file's containing directory" (see its own doc comment). A
+ * leading segment that is none of `crate`, `self` or `super` names an
+ * external crate (std or third-party) and is `unresolved` immediately —
+ * there is nothing in this repository it could ever resolve to.
  *
  * A trailing `::*` (a glob `use`) is stripped explicitly before the rest of
- * the path is resolved as an ordinary module path — this grammar's
- * `use_wildcard` capture carries the literal `*` in its text (unlike Java,
- * whose grammar drops it before capture), so it must be handled on purpose
- * rather than accidentally falling out of the "drop the last segment"
- * item-vs-module logic.
+ * the path is resolved — this grammar's `use_wildcard` capture carries the
+ * literal `*` in its text (unlike Java, whose grammar drops it before
+ * capture). The strip and the item-drop fallback above are NOT combined:
+ * doing both would drop two segments, so `crate::deep::missing::*` would
+ * wrongly resolve to the PARENT of a module (`deep`) that itself exists,
+ * even though the module the glob actually names (`deep::missing`) does
+ * not. A glob's remainder is tried as a module path exactly once.
+ *
+ * Two indexed files can legitimately share one module path — `<path>.rs`
+ * and `<path>/mod.rs` both satisfying the same `mod foo;` is a Rust compile
+ * error, but this index reflects what is on disk, not what compiles (a
+ * repo mid-refactor can have both). When both are indexed, that is genuine
+ * ambiguity — several candidates matched — and is reported as `ambiguous`
+ * with the lexicographically first path, for the same determinism reason
+ * `crateRootDirFor` cares about ordering. This is distinct from the
+ * full-path-vs-item-drop choice above, which is never ambiguous: with both
+ * `src/helper.rs` and `src/helper/help.rs` indexed, `crate::helper::help`
+ * genuinely means the `help` submodule, and longer-first is simply correct,
+ * not merely first-matched.
  */
 export const rustResolver: ImportResolver = {
   id: 'rust',
 
   resolve(fromPath: string, specifier: string, knownPaths: Set<string>, _repoRoot: string): ResolvedImport {
-    const stripped = specifier.endsWith('::*') ? specifier.slice(0, -3) : specifier
+    const isGlob = specifier.endsWith('::*')
+    const stripped = isGlob ? specifier.slice(0, -3) : specifier
     const segments = stripped.split('::').filter(s => s.length > 0)
     if (segments.length === 0) return UNRESOLVED
 
     const [head, ...rest] = segments
     let baseDir: string
     if (head === 'crate') {
-      baseDir = crateRootDir(knownPaths)
+      baseDir = crateRootDirFor(fromPath, knownPaths)
     } else if (head === 'self') {
       baseDir = moduleDirOf(fromPath)
     } else if (head === 'super') {
@@ -116,15 +179,19 @@ export const rustResolver: ImportResolver = {
       return UNRESOLVED
     }
 
-    // Try the full remaining path as a module first (longer form), then
-    // with its last segment dropped (the item-vs-module ambiguity).
-    const attempts = rest.length > 0 ? [rest, rest.slice(0, -1)] : [rest]
+    // A glob names a module, definitively: try the full remaining path
+    // exactly once. Otherwise the last segment may be an item, not a
+    // module, so try the full path first (longer form), then with its
+    // last segment dropped.
+    const attempts = isGlob || rest.length === 0 ? [rest] : [rest, rest.slice(0, -1)]
     for (const attempt of attempts) {
       const modulePath = [baseDir, ...attempt].filter(s => s.length > 0).join('/')
       if (modulePath.length === 0) continue
-      for (const candidate of candidatesFor(modulePath)) {
-        if (knownPaths.has(candidate)) return { path: candidate, confidence: 'resolved' }
-      }
+
+      const matches = candidatesFor(modulePath).filter(candidate => knownPaths.has(candidate))
+      if (matches.length === 0) continue
+      if (matches.length > 1) return { path: [...matches].sort()[0], confidence: 'ambiguous' }
+      return { path: matches[0], confidence: 'resolved' }
     }
     return UNRESOLVED
   },
