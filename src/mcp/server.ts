@@ -128,7 +128,12 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
       'Strongly-connected components in the dependency graph. Scope "module" finds cycles ' +
       'between directories, which are the architecturally interesting ones; scope "file" finds ' +
       'them between individual files, including inside a single module. Ranked by size, then ' +
-      'by how many edges run inside the cycle.',
+      'by how many edges run inside the cycle. A module-scope cycle whose members contain no ' +
+      'file-level cycle is flagged `aggregationArtifact: true`: it exists only because unrelated ' +
+      'files happen to share a parent directory, not because anything actually depends ' +
+      'circularly. Do not report an `aggregationArtifact: true` result as a real circular ' +
+      'dependency. Each cycle\'s `hops` field is the evidence: the actual files whose imports ' +
+      'create each module-to-module link, so you can see for yourself whether it is real.',
     inputSchema: {
       repo: repoArg,
       scope: z.enum(['module', 'file']).default('module'),
@@ -164,8 +169,11 @@ export function createArchServer(options: ArchServerOptions = {}): McpServer {
     description:
       'Technical-debt candidates ranked by structural weight multiplied by git churn, with ' +
       'every raw signal reported alongside the score. `gitAvailable: false` means the target ' +
-      'is not a git repository (or has no history in the window), and the ranking falls back ' +
-      'to structural weight only.',
+      'is not a git repository, or history collection failed, and the ranking falls back to ' +
+      'structural weight only. A git repository with no commits inside `windowDays` still ' +
+      'reports `gitAvailable: true` but `totalCommits: 0` — in that case the churn half of ' +
+      'every score contributed nothing, so treat the ranking as structural only just as you ' +
+      'would `gitAvailable: false`, and consider widening `windowDays`.',
     inputSchema: {
       repo: repoArg,
       limit: z.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),

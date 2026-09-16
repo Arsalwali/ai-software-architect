@@ -46,6 +46,15 @@ export interface HotspotResult {
   totalFiles: number
   gitAvailable: boolean
   windowDays: number
+  /**
+   * Total commits found inside `windowDays`. A git repository with no
+   * commits in the window still reports `gitAvailable: true`, but a
+   * `totalCommits` of 0 means the churn half of every score below
+   * contributed nothing — the same practical outcome as `gitAvailable:
+   * false`, just reached a different way, and otherwise indistinguishable
+   * from it by a caller who only looks at `gitAvailable`.
+   */
+  totalCommits: number
   skippedLargeCommits: number
   /** Pairs that change together but have no nearby import relationship. */
   hiddenCoupling: HiddenCoupling[]
@@ -164,6 +173,7 @@ export function findHotspots(
     totalFiles: rows.length,
     gitAvailable: history.available,
     windowDays: history.windowDays,
+    totalCommits: history.totalCommits,
     skippedLargeCommits: history.skippedLargeCommits,
     hiddenCoupling: hiddenCouplingCapped.items,
     totalHiddenCoupling: hiddenCoupling.length,

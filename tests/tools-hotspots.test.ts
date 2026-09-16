@@ -166,6 +166,22 @@ describe('findHotspots with git available', () => {
   })
 })
 
+describe('findHotspots with a git repo but an empty window', () => {
+  it('reports gitAvailable true, totalCommits 0, and still returns a result', async () => {
+    const root = gitRepoWithChurn()
+    const store = await indexed(root)
+    // windowDays <= 0 makes collectHistory use a cutoff one second in the
+    // future, which deterministically excludes every existing commit --
+    // see the comment in src/git/history.ts. This reproduces "a git repo
+    // whose only commits fall outside windowDays" without a timing race.
+    const r = findHotspots(store, root, { limit: 10, windowDays: 0 })
+    expect(r.gitAvailable).toBe(true)
+    expect(r.totalCommits).toBe(0)
+    expect(r.hotspots.length).toBeGreaterThan(0)
+    store.close()
+  })
+})
+
 describe('findHotspots without git', () => {
   it('degrades to structural scoring and says so rather than pretending', async () => {
     const fixture = buildFixture()
