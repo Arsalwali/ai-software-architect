@@ -78,7 +78,7 @@ export async function runColdIndex(options: ColdIndexOptions): Promise<IndexRepo
       const targets: number[] = []
 
       for (const raw of file.imports) {
-        const { path: resolvedPath, confidence } = resolveImport(file.path, raw.specifier, knownPaths)
+        const { path: resolvedPath, confidence } = resolveImport(file.path, raw.specifier, knownPaths, repoRoot)
         const resolvedFileId = resolvedPath ? fileIdByPath.get(resolvedPath) ?? null : null
         if (resolvedFileId !== null) targets.push(resolvedFileId)
         importRows.push({

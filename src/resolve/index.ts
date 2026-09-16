@@ -18,8 +18,17 @@ export interface ImportResolver {
    * Resolution is against the set of INDEXED paths rather than the
    * filesystem: an import can only produce a graph edge when its target is
    * a file this index actually holds.
+   *
+   * `repoRoot` is required, not optional, even though most resolvers ignore
+   * it: an optional parameter would let a future language-specific resolver
+   * silently skip repo context it actually needs, the exact defect Go's
+   * resolver originally shipped with (it fell back to `process.cwd()`,
+   * which is wrong whenever the indexed repo isn't the running process's
+   * cwd — e.g. `arch index /some/other/path`). Requiring it in the
+   * signature forces every resolver, including future ones, to receive the
+   * real repo root explicitly and decide for itself whether it needs it.
    */
-  resolve(fromPath: string, specifier: string, knownPaths: Set<string>): ResolvedImport
+  resolve(fromPath: string, specifier: string, knownPaths: Set<string>, repoRoot: string): ResolvedImport
 }
 
 /**

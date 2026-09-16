@@ -21,7 +21,7 @@ export function modulePrefixFrom(goModContents: string): string | null {
 
 // go.mod is per-repository, not per-import, so its module prefix is read at
 // most once per repository root and cached here rather than re-read on
-// every specifier. Keyed by the root path a caller resolved against.
+// every specifier. Keyed by the exact `repoRoot` the caller passes in.
 const prefixCache = new Map<string, string | null>()
 
 function prefixForRoot(root: string): string | null {
@@ -62,36 +62,27 @@ function directoryOf(path: string): string {
  * (standard library or third-party) and resolves as `unresolved` — never
  * `ambiguous`, since nothing matched at all.
  *
- * The module prefix is not part of the shared `ImportResolver` contract (no
- * other language needs one), so `resolve` takes it as an optional fourth
- * argument rather than widening that interface for one language. When the
- * caller omits it (as the generic `resolverFor(...).resolve(...)` dispatch
- * path does — see `src/indexer/resolve-imports.ts`), the resolver falls
- * back to reading `go.mod` itself, lazily and cached per root, from the
- * process's current working directory — the same "repo root defaults to
- * cwd" convention `src/mcp/server.ts` already uses, and true for how this
- * tool is normally run (`arch serve` / `arch index` from inside the target
- * repo). A repository with no `go.mod` (or no `module` line) resolves every
+ * `repoRoot` is REQUIRED, not defaulted to `process.cwd()`. An earlier
+ * version of this resolver fell back to cwd when a prefix wasn't supplied
+ * directly, on the theory that `arch serve`/`arch index` (no argument) are
+ * normally run from inside the target repo. That is true for the common
+ * case, but `arch index <path>` run from elsewhere silently resolved every
+ * internal Go import to `unresolved` — a real repo indexed the ordinary way
+ * came back with a 100% `unresolved` import breakdown. Reading `go.mod` from
+ * the caller-supplied `repoRoot` instead (now threaded through
+ * `resolveImport` -> the cold and incremental pipelines, both of which
+ * already have it) fixes this for every invocation shape, with no fallback
+ * left to silently paper over a missing one.
+ *
+ * A repository with no `go.mod` (or no `module` line) resolves every
  * internal import to `unresolved`, which is honest: without a module prefix
  * nothing can be told apart from an external import.
  */
-export const goResolver: ImportResolver & {
-  resolve(
-    fromPath: string,
-    specifier: string,
-    knownPaths: Set<string>,
-    modulePrefix?: string | null,
-  ): ResolvedImport
-} = {
+export const goResolver: ImportResolver = {
   id: 'go',
 
-  resolve(
-    fromPath: string,
-    specifier: string,
-    knownPaths: Set<string>,
-    modulePrefix?: string | null,
-  ): ResolvedImport {
-    const prefix = modulePrefix === undefined ? prefixForRoot(process.cwd()) : modulePrefix
+  resolve(fromPath: string, specifier: string, knownPaths: Set<string>, repoRoot: string): ResolvedImport {
+    const prefix = prefixForRoot(repoRoot)
     if (prefix === null) return UNRESOLVED
 
     let dir: string

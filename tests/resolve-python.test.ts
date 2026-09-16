@@ -6,7 +6,7 @@ const known = new Set([
   'pkg/__init__.py', 'pkg/helper.py', 'pkg/service.py', 'main.py',
   'pkg/sub/__init__.py', 'pkg/sub/deep.py', 'pkg/util.py',
 ])
-const r = (from: string, spec: string) => pythonResolver.resolve(from, spec, known)
+const r = (from: string, spec: string) => pythonResolver.resolve(from, spec, known, '/repo')
 
 describe('pythonResolver', () => {
   it('resolves an absolute dotted module', () => {

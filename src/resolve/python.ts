@@ -17,7 +17,11 @@ const UNRESOLVED: ResolvedImport = { path: null, confidence: 'unresolved' }
 export const pythonResolver: ImportResolver = {
   id: 'python',
 
-  resolve(fromPath: string, specifier: string, knownPaths: Set<string>): ResolvedImport {
+  // `_repoRoot`: unused. Python resolution only needs the dotted specifier
+  // and the indexed path set — nothing repo-level like Go's go.mod prefix.
+  // Named and prefixed rather than omitted so a reader can see the omission
+  // is deliberate, not a signature that fell out of date.
+  resolve(fromPath: string, specifier: string, knownPaths: Set<string>, _repoRoot: string): ResolvedImport {
     const base = specifier.startsWith('.')
       ? relativeBase(fromPath, specifier)
       : { dir: '', rest: specifier }

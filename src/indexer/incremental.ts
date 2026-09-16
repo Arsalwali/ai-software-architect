@@ -92,7 +92,7 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
     for (const [path, fileId] of idsByPath) {
       if (dilation.has(path)) continue
       for (const imp of store.importsForFile(fileId)) {
-        const { path: recomputed } = resolveImport(path, imp.rawSpecifier, futurePaths)
+        const { path: recomputed } = resolveImport(path, imp.rawSpecifier, futurePaths, repoRoot)
         const stored = imp.resolvedFileId === null ? null : pathsById.get(imp.resolvedFileId) ?? null
         if (recomputed !== stored) {
           dilation.add(path)
@@ -139,7 +139,7 @@ export async function runIncrementalIndex(options: IncrementalOptions): Promise<
 
       const targets: number[] = []
       for (const raw of file.imports) {
-        const { path: resolvedPath, confidence } = resolveImport(path, raw.specifier, knownPaths)
+        const { path: resolvedPath, confidence } = resolveImport(path, raw.specifier, knownPaths, repoRoot)
         const resolvedFileId = resolvedPath ? freshIds.get(resolvedPath) ?? null : null
         if (resolvedFileId !== null) targets.push(resolvedFileId)
         importRows.push({

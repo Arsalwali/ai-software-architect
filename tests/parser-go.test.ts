@@ -88,20 +88,11 @@ describe('go produces a real graph', () => {
     const fixture = buildGoFixture({ git: true })
     const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-go-db-')), 'index.db')
 
-    // goResolver falls back to reading go.mod from process.cwd() when the
-    // full indexing pipeline calls it (it has no repoRoot to hand the
-    // resolver directly — see the contract note in src/resolve/go.ts), the
-    // same "repo root defaults to cwd" convention src/mcp/server.ts already
-    // relies on. Chdir into the fixture so that fallback finds ITS go.mod
-    // rather than this project's (which has none), and always restore cwd
-    // even if indexing throws.
-    const previousCwd = process.cwd()
-    process.chdir(fixture)
-    try {
-      await runColdIndex({ repoRoot: fixture, dbPath })
-    } finally {
-      process.chdir(previousCwd)
-    }
+    // repoRoot is threaded from here through resolveImport into goResolver
+    // (see src/resolve/go.ts), which reads THIS fixture's go.mod from it —
+    // no cwd trick needed, and this deliberately runs without touching
+    // process.cwd() to prove the real, ordinary indexing path works.
+    await runColdIndex({ repoRoot: fixture, dbPath })
 
     const store = GraphStore.open(dbPath)
     try {

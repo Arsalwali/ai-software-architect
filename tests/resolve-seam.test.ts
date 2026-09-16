@@ -18,26 +18,27 @@ describe('resolverFor', () => {
 
 describe('resolveImport still behaves exactly as before the seam', () => {
   const known = new Set(['src/helper.ts', 'src/widgets/index.ts', 'src/legacy.js'])
+  const repoRoot = '/repo'
 
   it('resolves a relative sibling', () => {
-    expect(resolveImport('src/main.ts', './helper', known))
+    expect(resolveImport('src/main.ts', './helper', known, repoRoot))
       .toEqual({ path: 'src/helper.ts', confidence: 'resolved' })
   })
 
   it('resolves a directory to its index file', () => {
-    expect(resolveImport('src/main.ts', './widgets', known).path).toBe('src/widgets/index.ts')
+    expect(resolveImport('src/main.ts', './widgets', known, repoRoot).path).toBe('src/widgets/index.ts')
   })
 
   it('prefers the .ts source for an explicit .js specifier', () => {
-    expect(resolveImport('src/main.ts', './helper.js', known).path).toBe('src/helper.ts')
+    expect(resolveImport('src/main.ts', './helper.js', known, repoRoot).path).toBe('src/helper.ts')
   })
 
   it('leaves a bare package specifier unresolved', () => {
-    expect(resolveImport('src/main.ts', 'react', known))
+    expect(resolveImport('src/main.ts', 'react', known, repoRoot))
       .toEqual({ path: null, confidence: 'unresolved' })
   })
 
   it('never escapes the repository root', () => {
-    expect(resolveImport('src/main.ts', '../../../etc/passwd', known).path).toBeNull()
+    expect(resolveImport('src/main.ts', '../../../etc/passwd', known, repoRoot).path).toBeNull()
   })
 })

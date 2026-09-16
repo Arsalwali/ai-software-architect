@@ -12,7 +12,12 @@ const INDEX_BASENAMES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'inde
  */
 export const javascriptResolver: ImportResolver = {
   id: 'javascript',
-  resolve(fromPath: string, specifier: string, knownPaths: Set<string>): ResolvedImport {
+  // `_repoRoot`: unused. JavaScript/TypeScript resolution only ever needs
+  // the indexed path set (see the module doc comment above) — no
+  // language-specific decl file names a repo-relative module prefix, unlike
+  // Go's go.mod. Named and prefixed rather than omitted so a reader can see
+  // the omission is deliberate, not a signature that fell out of date.
+  resolve(fromPath: string, specifier: string, knownPaths: Set<string>, _repoRoot: string): ResolvedImport {
     if (!specifier.startsWith('.')) {
       return { path: null, confidence: 'unresolved' }
     }
