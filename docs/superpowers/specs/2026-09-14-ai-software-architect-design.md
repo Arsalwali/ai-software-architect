@@ -46,7 +46,7 @@ about structure.
 | Primary use | Daily-driver tool for real repositories | Prioritizes correctness and freshness over feature breadth |
 | Language coverage | Language-agnostic via tree-sitter | Breadth on day one; per-language depth is additive |
 | Interface | MCP server consumed by Claude Code | Removes the entire agent/UI subsystem from scope |
-| Knowledge base | Structural index + lazily cached module summaries | Whole-repo LLM preprocessing is expensive and goes stale |
+| Knowledge base | Structural index only; module summaries withdrawn (§5.5) | Whole-repo LLM preprocessing is expensive and goes stale — and the MCP consumer summarizes better itself |
 | Indexing strategy | Eager structural index, incremental via git | Tree-sitter is fast enough that lazy tiers add complexity without payoff |
 | Implementation | TypeScript / Node | Matches maintainer's stack; MCP SDK is TS-first; future TS resolver is native |
 | Storage | SQLite at `~/.arch/repos/<path-hash>/index.db` | No service to run; central location keeps repos clean and treats clones identically |
@@ -123,7 +123,29 @@ The only module that touches SQLite. Exposes typed queries — `callersOf`,
 `dependentsOf`, `cyclesIn`, `couplingBetween` — rather than letting SQL leak upward.
 Graph algorithms run in-process over loaded edge sets.
 
-### 5.5 `summarizer`
+### 5.5 `summarizer` — WITHDRAWN
+
+**This component is deliberately not built, and milestone 9 is withdrawn rather than
+deferred.** The original design predates the decision to ship as an MCP server. Once the
+consumer became an LLM with its own file access, a summarizer inside the tool became a
+duplicate of a capability the caller already has — and a worse one, because a cached
+string cannot know what the caller actually asked.
+
+`describe_module` already returns the file list, the exported surface, dependencies and
+dependents with weights, coupling metrics, and the sub-modules it excluded. A model holding
+that plus `Read` produces a better summary than any cache, tailored to the question.
+
+Building it would have added an API-key requirement, network calls, per-query cost and a
+cache-invalidation problem, in exchange for none of that. It would also have cost the tool
+its best property: it runs entirely locally, with no network and no per-query spend.
+
+`describe_module` keeps returning `summary: null` with a reason, and the `summaries` table
+stays in the schema — both are now the permanent shape rather than a placeholder. The one
+argument that would revive this is wanting `arch` to stand alone as a CLI that prints a
+readable architecture summary with no model attached; that is a different product decision,
+not unfinished work on this one.
+
+The original design follows, for the record:
 
 Lazy, cached, LLM-generated module summaries. Invoked by tools, never by the indexer.
 Cache key is the module subtree's git tree-hash, which means invalidation is automatic on
@@ -378,7 +400,7 @@ The system degrades in visible steps. Silence is never an acceptable failure mod
 | Schema version mismatch | Refuse to serve; instruct the user to reindex. No silent migration. |
 | Interrupted index | `meta.head_commit` absent, so the index reads as incomplete and the next run starts clean (§7 phase 6). |
 | Corrupt database | Detected on open; the directory is discarded and a full reindex is offered. |
-| Summarizer failure or no API key | `describe_module` returns structural data with `summary: null` and a reason. Every other tool is unaffected — the summary layer is strictly additive. |
+| Summarizer unavailable (now permanent — see §5.5) | `describe_module` returns structural data with `summary: null` and a reason. This is the shipped behaviour, not a degradation. |
 | Repository is not a git repo | Indexing proceeds with filesystem walk and gitignore parsing; git-dependent tools (`find_hotspots` churn signals) return a clear unavailability reason. |
 
 ## 10. Testing strategy
@@ -442,7 +464,8 @@ Each milestone is independently verifiable.
 6. **Incremental reindex**, with the full-versus-incremental equality invariant.
 7. **MCP server and the four core tools** (§8.2). *Usable from here onward.*
 8. **Remaining tools**, including git-signal analysis.
-9. **Summarizer**, lazily cached.
+9. ~~**Summarizer**, lazily cached.~~ **WITHDRAWN** — see §5.5. The MCP consumer is an LLM
+   with file access, so an in-tool summarizer duplicates a capability the caller already has.
 10. **Additional language grammars** — additive, one directory each.
 
 ## 13. Deferred
