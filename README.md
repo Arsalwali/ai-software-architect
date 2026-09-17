@@ -222,6 +222,18 @@ declaration would mark every one of them unexported and silently drop every
 cross-file edge into an interface or a trait. One consequence to know: a
 member of a *private* trait or interface is reported as exported.
 
+**A call inside a Rust macro produces no edge.** `println!`, `format!`,
+`write!`, `assert!` and `assert_eq!` are pervasive in real Rust, and a call
+written inside any of them is invisible to the graph: tree-sitter does not
+parse macro arguments as expressions, so `format!("{}", s.go())` parses as
+`macro_invocation > token_tree` — raw tokens, with no `call_expression`
+inside for a query to match. This is a grammar limitation, not a gap in this
+project's queries, and no query change can address it. It is Rust-specific;
+the equivalent constructs in other languages (`console.log(x())`,
+`print(x())`, `fmt.Println(x())`) are ordinary calls and are captured. The
+result is always a MISSING edge, never a wrong one, so treat a Rust
+repository's edge counts as a floor rather than a total.
+
 **An unresolved import yields no edge.** A repository whose import style the
 resolver does not recognise will index with real symbols and files but a
 sparse dependency graph: `get_repo_overview`'s `edgeConfidence` and per-file

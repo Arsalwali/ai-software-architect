@@ -133,6 +133,41 @@ function crateRootDirFor(fromPath: string, knownPaths: Set<string>): string {
  */
 
 /**
+ * PARKED LIMITATION, RUST-SPECIFIC (final review, round 3 — documented, NOT
+ * fixable by any change to this project): a call written inside a macro
+ * invocation produces NO call edge.
+ *
+ * Recorded here beside the crate-root assumptions above because this is
+ * where a reader looks for "what Rust support does not do", even though the
+ * cause sits in the parser rather than in this resolver.
+ *
+ * CAUSE, so nobody re-derives it: tree-sitter does not parse macro
+ * arguments as expressions. `format!("{}", s.go())` parses as
+ * `macro_invocation > token_tree > token_tree` — raw, untyped tokens, with
+ * no `call_expression` and no `field_expression` anywhere inside. The
+ * project's `calls.scm` matches `call_expression`, so there is nothing for
+ * any query to capture; this cannot be fixed by writing a better query, and
+ * no query change should be attempted for it. A real fix means re-parsing
+ * token trees as expressions, which tree-sitter's Rust grammar does not
+ * offer, because whether a macro's arguments are even Rust expressions
+ * depends on the macro's own definition.
+ *
+ * Verified in one file: `let v = s.go();` produced an edge, and
+ * `format!("{}", s.go())` on the next line produced none.
+ *
+ * WHY IT MATTERS: `println!`, `format!`, `write!`, `assert!` and
+ * `assert_eq!` are pervasive in real Rust, so a meaningful share of call
+ * sites — and nearly all of them in test modules — are invisible to the
+ * graph. The failure is a MISSING edge, never a wrong one, so it makes the
+ * graph sparser rather than confidently incorrect; but a Rust repository's
+ * edge counts should be read as a floor, not a total.
+ *
+ * Rust specifically. Other languages' equivalent constructs
+ * (`console.log(x())`, `print(x())`, `fmt.Println(x())`) are ordinary calls
+ * and are captured normally.
+ */
+
+/**
  * The crate root FILE for a directory already known to be a crate root
  * (`crateRootDirsFrom` membership) — `lib.rs` preferred over `main.rs`.
  *

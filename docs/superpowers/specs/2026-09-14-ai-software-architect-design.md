@@ -540,6 +540,19 @@ Each milestone is independently verifiable.
 
 ## 13. Deferred
 
+- **Rust calls inside macros are invisible, and cannot be made visible here.**
+  tree-sitter does not parse macro arguments as expressions: `format!("{}", s.go())`
+  parses as `macro_invocation > token_tree > token_tree`, raw tokens with no
+  `call_expression` or `field_expression` anywhere inside, so `calls.scm` has nothing to
+  match and no query change can fix it. Verified concretely — in one file `let v =
+  s.go();` produced an edge and `format!("{}", s.go())` on the next line produced none.
+  It matters because `println!`, `format!`, `write!`, `assert!` and `assert_eq!` are
+  pervasive in real Rust, so a meaningful share of call sites are missing from the graph.
+  Rust-specific: the equivalent constructs in other supported languages are ordinary
+  calls. A real fix needs a grammar that re-parses token trees as expressions, which is
+  not generally possible, since whether a macro's arguments are Rust expressions at all
+  depends on the macro's definition. The failure mode is a missing edge, never a wrong
+  one.
 - **Python import FORM is not carried through the resolver seam.** `from pkg import
   deep` and `import pkg.deep` both reach `pythonResolver` as the specifier `pkg.deep`,
   so when `pkg/deep.py` is not indexed both resolve to `pkg/__init__.py`. Right for the
