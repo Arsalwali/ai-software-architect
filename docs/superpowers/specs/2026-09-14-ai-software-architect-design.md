@@ -157,7 +157,7 @@ wording got wrong by filing it as optional:*
    silently, costing it every cross-file call edge. A build failure naming the line is
    the improvement. A language that reuses one of the five existing rules
    (`js-export-statement`, `python-module-level`, `go-capitalised`,
-   `java-public-or-interface-member`, `rust-visibility-modifier`) skips this
+   `java-public-or-interface-member`, `rust-trait-or-visibility-modifier`) skips this
    step entirely.
 
 *Optional, depending on the language's shape:*

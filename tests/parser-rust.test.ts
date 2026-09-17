@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { join } from 'node:path'
-import { mkdtempSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { RepoParser } from '../src/parser/parser.js'
 import { runColdIndex } from '../src/indexer/pipeline.js'
@@ -125,6 +125,52 @@ describe('rust parsing', () => {
     expect(main.exported).toBe(false)
   })
 
+  // final-fixes-round2.md item 4. `pub fn` is a compile error inside both
+  // `trait_item` and `impl Trait for T` (rustc E0449), so a rule of "has a
+  // visibility_modifier child" can NEVER be true for a trait method --
+  // neither the default body in the trait nor the implementation in the
+  // impl. Every one of them read `exported: false`, and since cross-file
+  // call resolution only considers exported symbols, every cross-file edge
+  // into a trait method was lost. Traits are central to Rust.
+  //
+  // The fix is the direct analogue of `java-public-or-interface-member`:
+  // a trait's members are implicitly public, so the container grants the
+  // visibility the member is forbidden to declare. Verified by probe:
+  // `impl_item` carries a `trait:` field for `impl Runner for Service` (and
+  // for the generic `impl<T> Runner for Vec<T>`) and has NO such field for
+  // an inherent `impl Service`, which is exactly the discriminator.
+  describe('trait methods, which cannot carry a visibility_modifier at all', () => {
+    const TRAIT_SOURCE =
+      'pub trait Runner {\n    fn go(&self) -> i32 {\n        1\n    }\n}\n\n' +
+      'pub struct Service {\n    pub n: i32,\n}\n\n' +
+      'impl Runner for Service {\n    fn go(&self) -> i32 {\n        self.n\n    }\n}\n\n' +
+      'impl Service {\n    fn inherent_private(&self) -> i32 {\n        2\n    }\n}\n'
+
+    const symbols = () => parser.parse('runner.rs', TRAIT_SOURCE).symbols
+
+    it('exports a default method body declared in the trait', () => {
+      const go = symbols().filter(s => s.name === 'go')
+      expect(go.length).toBe(2)
+      expect(go.every(s => s.exported)).toBe(true)
+    })
+
+    it('exports a method in an `impl Trait for T` block', () => {
+      // Both `go` symbols above are asserted together; this pins the impl
+      // one specifically by its parentName, so a rule that only handled
+      // `trait_item` and not the trait impl would fail here.
+      const implGo = symbols().find(s => s.name === 'go' && s.parentName === 'Service')!
+      expect(implGo, 'no `go` attributed to Service').toBeDefined()
+      expect(implGo.exported).toBe(true)
+    })
+
+    it('does NOT export an unmarked method in an inherent impl', () => {
+      // Without this the rule is indistinguishable from `return true`:
+      // `impl Service` carries no `trait:` field, so its members keep the
+      // ordinary visibility_modifier rule.
+      expect(symbols().find(s => s.name === 'inherent_private')!.exported).toBe(false)
+    })
+  })
+
   it('extracts a use declaration specifier', () => {
     const specs = parser.parse('service.rs', SERVICE_SOURCE).imports.map(i => i.specifier)
     expect(specs).toEqual(['crate::helper::help'])
@@ -172,6 +218,48 @@ describe('rust produces a real graph', () => {
       expect(call).toBeDefined()
       expect(call.confidence).toBe('heuristic')
       expect(call.srcFileId).toBe(serviceId)
+    } finally {
+      store.close()
+    }
+  })
+
+  // final-fixes-round2.md item 4, end to end: the harm the parser-level
+  // tests above describe is LOST EDGES. Cross-file call resolution only
+  // considers exported symbols, so while no trait method could be exported,
+  // no call into one could ever resolve -- for a construct Rust is built
+  // around. Neither the shipped fixture nor any other test had a trait
+  // being CALLED across a file boundary, which is why this shipped.
+  it('resolves a cross-file call into a trait method', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'arch-rust-trait-'))
+    for (const [rel, content] of Object.entries({
+      'src/lib.rs': 'pub mod runner;\npub mod app;\n',
+      'src/runner.rs':
+        'pub trait Runner {\n    fn go(&self) -> i32 {\n        1\n    }\n}\n',
+      'src/app.rs':
+        'use crate::runner::Runner;\n\n' +
+        'pub fn drive(r: &dyn Runner) -> i32 {\n    r.go()\n}\n',
+    })) {
+      const abs = join(root, rel)
+      mkdirSync(dirname(abs), { recursive: true })
+      writeFileSync(abs, content)
+    }
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'arch-rust-trait-db-')), 'index.db')
+    await runColdIndex({ repoRoot: root, dbPath })
+
+    const store = GraphStore.open(dbPath)
+    try {
+      const runnerId = store.fileIdByPath('src/runner.rs')!
+      const appId = store.fileIdByPath('src/app.rs')!
+
+      // The import resolving is a precondition, not the thing under test --
+      // asserted so a failure below cannot be blamed on the resolver.
+      const imp = store.importsForFile(appId).find(i => i.rawSpecifier === 'crate::runner::Runner')!
+      expect(imp.resolvedFileId).toBe(runnerId)
+
+      const call = store.edgesInto(runnerId).find(e => e.dstName === 'go')!
+      expect(call, 'no edge from app.rs into the trait method `go`').toBeDefined()
+      expect(call.srcFileId).toBe(appId)
+      expect(call.confidence).toBe('heuristic')
     } finally {
       store.close()
     }

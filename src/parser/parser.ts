@@ -228,7 +228,7 @@ function isExported(node: Node, rule: ExportRule, name: string): boolean {
       return isGoExportedName(name)
     case 'java-public-or-interface-member':
       return isJavaExported(node)
-    case 'rust-visibility-modifier':
+    case 'rust-trait-or-visibility-modifier':
       return isRustExported(node)
     case 'js-export-statement': {
       let current: Node | null = node
@@ -300,20 +300,56 @@ function isGoExportedName(name: string): boolean {
 }
 
 /**
- * Rust's export rule (ruling on Task 5): a declaration is part of the
- * crate's importable surface iff it has a direct child of type
- * `visibility_modifier` — verified against the real grammar
- * (tree-sitter-rust.wasm) for `function_item` and `struct_item`.
+ * Rust's export rule. Two independent paths to `true`, because Rust
+ * expresses the same idea two different ways:
  *
- * Tested by NODE TYPE, not by the modifier's text: `pub(crate)` and
- * `pub(super)` are also `visibility_modifier` nodes and are genuinely part
- * of the importable surface within the crate, which is the surface this
- * index models. `pub(self)` is technically private and this rule counts it
- * as exported — a deliberate, documented false positive rather than added
- * complexity for a vanishingly rare case.
+ * 1. A direct `visibility_modifier` child (ruling on Task 5) — verified
+ *    against the real grammar (tree-sitter-rust.wasm) for `function_item`
+ *    and `struct_item`. Tested by NODE TYPE, not by the modifier's text:
+ *    `pub(crate)` and `pub(super)` are also `visibility_modifier` nodes and
+ *    are genuinely part of the importable surface within the crate, which
+ *    is the surface this index models. `pub(self)` is technically private
+ *    and this rule counts it as exported — a deliberate, documented false
+ *    positive rather than added complexity for a vanishingly rare case.
+ *
+ * 2. The nearest enclosing container is a `trait_item`, or an `impl_item`
+ *    that carries a `trait:` field (final-fixes-round2.md item 4). Rule 1
+ *    ALONE could never be true for a trait method, at all, ever: `pub fn`
+ *    is a compile error inside both a trait and an `impl Trait for T`
+ *    (rustc E0449), so the member is FORBIDDEN from declaring the
+ *    visibility its trait already grants it. Every trait method therefore
+ *    read `exported: false`, and since cross-file call resolution only
+ *    considers exported symbols, every cross-file edge into a trait method
+ *    was silently lost — for the construct Rust is built around.
+ *
+ * This is the direct analogue of `isJavaExported`'s interface-member rule,
+ * and it borrows that rule's structure deliberately: the container grants
+ * the visibility the member cannot state, and only the NEAREST container
+ * counts, so an inherent `impl Service { fn private_helper() }` nested
+ * anywhere near a trait impl keeps the ordinary rule. `impl_item` carries a
+ * `trait:` field for `impl Runner for Service` and for the generic
+ * `impl<T> Runner for Vec<T>`, and has NO such field for an inherent
+ * `impl Service` — verified by probe, and that presence/absence is the
+ * whole discriminator.
+ *
+ * The container list is `METHOD_CONTAINER_TYPES.rust` itself rather than a
+ * second copy of `['impl_item', 'trait_item']`, exactly as `isJavaExported`
+ * reuses `ENCLOSING_CLASS_TYPES.java`: the node set that decides "this is a
+ * method of X" and the node set that decides "X grants it visibility" must
+ * not be able to drift apart.
+ *
+ * APPROXIMATION, the same trade already accepted for Java: a PRIVATE trait
+ * (`trait Hidden { ... }`, no `pub`) reports its members as exported. The
+ * members genuinely are public within the trait's own visibility, and the
+ * cost of being wrong is an edge into a symbol the caller could not have
+ * reached anyway — far smaller than the cost of losing every trait edge.
  */
 function isRustExported(node: Node): boolean {
-  return node.children.some(child => child?.type === 'visibility_modifier')
+  if (node.children.some(child => child?.type === 'visibility_modifier')) return true
+  const container = enclosingContainerOfType(node, METHOD_CONTAINER_TYPES.rust)
+  if (container === null) return false
+  if (container.type === 'trait_item') return true
+  return container.childForFieldName('trait') !== null
 }
 
 function signatureOf(node: Node): string | null {

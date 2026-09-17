@@ -26,8 +26,12 @@ export type ExportRule =
   | 'go-capitalised'
   /** An explicit `public` modifier, or the nearest enclosing type is an interface or annotation type. Java. */
   | 'java-public-or-interface-member'
-  /** A direct `visibility_modifier` child. Rust. */
-  | 'rust-visibility-modifier'
+  /**
+   * A direct `visibility_modifier` child, OR membership of a trait — whose
+   * methods are forbidden from carrying one (rustc E0449) and are public
+   * by virtue of the trait. Rust.
+   */
+  | 'rust-trait-or-visibility-modifier'
 
 export interface LanguageDef {
   id: string
@@ -222,7 +226,7 @@ export const LANGUAGES: LanguageDef[] = [
   def({
     id: 'rust', wasm: 'rust', queries: 'rust',
     extensions: ['.rs'], resolverId: 'rust',
-    exportRule: 'rust-visibility-modifier',
+    exportRule: 'rust-trait-or-visibility-modifier',
     // Both a free function and (nested in an `impl_item`/`trait_item`) a
     // method -- one node type for both, like Python's, with a normal
     // `name` field.

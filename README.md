@@ -209,6 +209,19 @@ edges between files:
   crate-root items (`crate::Item` falling through to `lib.rs`/`main.rs`
   itself).
 
+**Export rules are per-language, and two of them are container-granted.** A
+symbol is a candidate for a cross-file call edge only if it is exported, and
+each language decides that its own way: an `export` statement (TypeScript,
+JavaScript), module-level definition (Python), a capitalised name (Go), an
+explicit `public` **or** membership of an interface or annotation type
+(Java), and a `pub` modifier **or** membership of a trait (Rust). The last
+two are container-granted because the member is not allowed to state the
+visibility itself — a Java interface member and a Rust trait method both
+reject an explicit modifier (rustc E0449), so a rule that looked only at the
+declaration would mark every one of them unexported and silently drop every
+cross-file edge into an interface or a trait. One consequence to know: a
+member of a *private* trait or interface is reported as exported.
+
 **An unresolved import yields no edge.** A repository whose import style the
 resolver does not recognise will index with real symbols and files but a
 sparse dependency graph: `get_repo_overview`'s `edgeConfidence` and per-file
