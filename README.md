@@ -377,3 +377,23 @@ these languages is still discovered and indexed, but with `lang: null` and
 no symbols — it contributes to `totals.files` but not to `totals.symbols`,
 and shows up in `get_repo_overview`'s language breakdown as a `null`-language
 row rather than silently vanishing.
+
+**Two known parsing and edge-kind caveats**, both verified against this
+repository's own index:
+
+- **`import type` counts as a dependency.** A TypeScript type-only import is
+  recorded exactly like a value import (`kind: 'static'`), because the grammar
+  produces the same `import_statement` node for both and nothing inspects the
+  `type` keyword. So `find_cycles` will report a cycle whose edges are all
+  erased at compile time. This repository has one: the six files in
+  `src/resolve/` form a cycle through `import type` back-edges that does not
+  exist at runtime. The cycle is real in the source and harmless in the build,
+  and the tool does not currently tell you which kind you are looking at.
+- **A property named `in` or `instanceof` can break a TypeScript interface.**
+  If it follows another property that has no trailing `;` or `,`, the grammar
+  reads the keyword as a binary type operator, swallows the closing brace and
+  reports a parse error. `of`, `typeof` and `as` are fine; a quoted `"in"` is
+  fine; a separator on the line above is fine. The file still indexes — its
+  symbols are kept and the error is counted in `get_repo_overview`'s
+  `filesWithParseErrors` — so this costs you accuracy inside one file, never a
+  wrong answer. `src/graph/module-graph.ts` in this repository is an example.

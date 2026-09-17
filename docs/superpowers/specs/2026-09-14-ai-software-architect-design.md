@@ -560,6 +560,35 @@ Each milestone is independently verifiable.
   `ModuleNotFoundError` in Python, even though `__init__.py` does execute before it
   fails. Fixing it means adding the import form to `RawImport` and threading it through
   the parser, the store and every resolver. Recorded rather than done at the final gate.
+- **`import type` is indexed as an ordinary dependency, so a TypeScript type-only cycle
+  is reported as a cycle.** `imports.scm` matches `(import_statement source: ...)`, and
+  tree-sitter produces that same node for `import type { X } from './y.js'` as for a
+  value import; nothing inspects the `type` keyword, so the row lands with
+  `kind: 'static'`, indistinguishable from a real runtime dependency. Verified on this
+  repository: the only import row for `src/resolve/rust.ts` is
+  `./index.js | kind=static | resolved`, and `find_cycles` consequently reports a
+  six-member cycle across `src/resolve/{index,go,java,javascript,python,rust}.ts`. Every
+  back-edge in that cycle is `import type`, which TypeScript erases at compile time, so
+  the cycle does not exist at runtime. It is a real source-level cycle and a harmless
+  one, and the tool does not distinguish the two. A fix means capturing the `type`
+  keyword in the query, carrying a fourth `kind` on `RawImport`, and letting
+  `find_cycles` and `get_coupling` filter on it. The failure mode is an overstated edge,
+  never a missing one.
+- **A TypeScript interface property named `in` or `instanceof` can break parsing of the
+  whole interface.** When such a property follows another property and the preceding one
+  carries no explicit `;` or `,`, the grammar reads the keyword as a binary type operator
+  continuing the previous property's type, swallows the interface's closing brace, and
+  emits a MISSING `}` plus an `ERROR`. Minimal reproduction:
+  `interface A {\n  out: number\n  in: number\n}` gives 2 errors, while the same text
+  with a `;` or `,` after `out: number`, or with `"in"` quoted, or with `in` as the first
+  member, parses clean. `of`, `typeof` and `as` are unaffected; only the binary operators
+  `in` and `instanceof` are. This repository hits it at `src/graph/module-graph.ts:10`,
+  which is the source of its 2 parse errors. Degradation behaves as §9 intends: all four
+  of that file's symbols are still indexed, and the count is surfaced by the CLI and by
+  `get_repo_overview`'s `filesWithParseErrors` rather than being swallowed. The
+  workaround, for anyone who cares more about a clean parse than about house style, is a
+  separator on the preceding line or a quoted property name. The failure mode is missing
+  symbols within one file, never wrong ones.
 
 - TypeScript deep resolver via the compiler API, filling the `exact` tier.
 - Interactive architecture visualization, as a separate project over a read-only query
