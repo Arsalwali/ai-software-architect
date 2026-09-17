@@ -1,10 +1,9 @@
 # ai-software-architect
 
 Indexes a repository into a queryable architecture graph — files, symbols,
-imports, and call/extends/implements/instantiates edges with an honest
-confidence tier on each one — and exposes it to Claude Code (or any MCP
-client) as a set of tools for answering "how does this codebase work"
-questions.
+imports, and call and instantiation edges with an honest confidence tier on
+each one — and exposes it to Claude Code (or any MCP client) as a set of
+tools for answering "how does this codebase work" questions.
 
 ## CLI
 
@@ -114,26 +113,54 @@ number. `find_cycles` flags a module-scope cycle's `aggregationArtifact` as
 `true` when it exists only because unrelated files happen to share a parent
 directory, not because anything in the code actually depends circularly —
 that distinction is the difference between a result worth investigating and
-one worth ignoring. And across every tool, any list capped by `limit`
-reports its true, uncapped total in a `truncated` field rather than
-silently trimming the answer.
+one worth ignoring. And every list capped by `limit` reports its true,
+uncapped total alongside the capped result rather than silently trimming
+the answer — as `truncated` for a tool with one list, and under a named
+field per list where a tool caps more than one (`get_coupling` reports
+`truncatedModules` and `truncatedPairs`; `describe_module` reports
+`truncatedFiles` and `truncatedSurface`; `find_hotspots` adds
+`truncatedHiddenCoupling`).
+
+`trace_flow` is the exception, because it caps a tree rather than a list:
+there is no uncapped total to report, since the nodes it never visited were
+never enumerated. It reports the booleans `depthLimited` and `limitReached`
+instead, plus `totalNodes` — the count of nodes actually emitted, not an
+uncapped total. `get_repo_overview` takes no `limit` at all.
 
 ### What the confidence tiers mean
 
 Every edge carries the evidence behind it, and the distinction matters. The
-five literal tier values — the strings you'll actually see in
-`get_repo_overview`'s `edgeConfidence` and in `get_dependencies`'
-`minConfidence` enum — are:
+five literal tier values — the strings accepted by `get_dependencies`'
+`minConfidence` enum and reported by `get_repo_overview`'s `edgeConfidence`
+— are:
 
-- **exact** — a type resolver confirmed the binding. Nothing emits this yet.
-- **resolved** — the tier an import edge carries when its specifier resolves
-  to a file inside this repository.
+- **exact** — reserved for a binding confirmed by a type resolver. **No edge
+  ever carries it**, because type-aware resolution does not exist: call
+  resolution emits only the three tiers below, so `edgeConfidence.exact` is
+  always 0. One non-edge exception, and it is deliberate: `trace_flow`
+  stamps `exact` on the **root** node of its tree. That node is not an
+  inference — it is the symbol you named, looked up by id — so it is known
+  rather than matched.
+- **resolved** — carried by **import rows**, not by edges, when a
+  specifier resolves to a file inside this repository. Imports live in their
+  own table; `edgeConfidence` reads the `edges` table, so
+  `edgeConfidence.resolved` is also always 0. The one place the string
+  surfaces in a tool result is `get_dependencies` with a **file or
+  directory** target, which walks resolved imports and stamps every node it
+  returns `resolved` by construction.
 - **heuristic** — the name matched exactly one candidate reachable from the
   file's imports.
 - **ambiguous** — the name matched several candidates. All are reported,
   because under-reporting what might break is worse than over-reporting it.
 - **unresolved** — no candidate in this repository. External, builtin, or
   third-party. Not uncertainty, just an absent target.
+
+So in practice `edgeConfidence` only ever has non-zero counts for
+`heuristic`, `ambiguous` and `unresolved`; `exact` and `resolved` are seeded
+to 0 so an absent tier reads as 0 rather than going missing. The ranking
+used by `minConfidence` is `exact` > `resolved` > `heuristic` > `ambiguous`
+> `unresolved`, so a floor of `resolved` keeps a file/directory walk's nodes
+and drops every call edge, and a floor of `exact` returns nothing at all.
 
 `unresolved` and `ambiguous` are never conflated: an absent target and a
 genuinely uncertain one are different findings, and merging them would hide
@@ -149,6 +176,12 @@ not "which mechanism produced this edge":
 | `likely`             | `resolved`, `heuristic` |
 | `ambiguous`          | `ambiguous`           |
 
+`verified` is therefore always 0 today, and `likely` is always exactly the
+`heuristic` count: `impact_of` walks call edges, and no call edge carries
+`exact` or `resolved`. The mapping is written out in full because it is what
+the buckets will mean once a type-aware resolver fills the `exact` tier —
+not because `verified` can be non-empty now.
+
 `unresolved` edges cannot appear in `impact_of`'s buckets at all — they
 point at no symbol, so a reverse-reachability search from a symbol never
 reaches them.
@@ -162,9 +195,26 @@ declaration, will also read `false`.
 
 Entry points are detected by conventional basename plus, for JavaScript and
 TypeScript, `package.json`'s `main`/`module`/`bin`/`exports`. Each language
-declares its own basenames in the parser's language registry — `index.*`,
-`main.*`, `server.*`, `app.*` and `cli.*` for JS/TS, `main.go`, `main.rs`,
-`__main__.py` and `Main.java` for the rest.
+declares its own basenames in the parser's language registry, and the list
+is literal rather than a pattern:
+
+| language   | entry basenames |
+| ---------- | --------------- |
+| TypeScript | `index.ts`, `main.ts`, `server.ts`, `app.ts`, `cli.ts` |
+| TSX        | `index.tsx` |
+| JavaScript | `index.js`, `index.mjs`, `main.js`, `server.js`, `app.js`, `cli.js` |
+| JSX        | *(none)* |
+| Python     | `__main__.py` |
+| Go         | `main.go` |
+| Java       | `Main.java` |
+| Rust       | `main.rs` |
+
+Nothing is inferred from the extension, so the gaps are real: **`main.tsx`
+— Vite's default React entry — is not recognised**, and neither is
+`main.mts`, `main.cjs`, `index.jsx` or any other `.jsx` basename. A project
+whose entry is one of those reads `entryPoints: []` unless its
+`package.json` declares the file, and `impact_of` will report
+`exportedFromEntryPoint: false` for every symbol in it.
 
 ## Language support
 
@@ -181,9 +231,9 @@ edges between files:
   target: `from pkg import service` resolves to `pkg/service.py` when that
   submodule exists, and falls back to `pkg/__init__.py` when the name is an
   item defined there (`from pkg import Service`) rather than a submodule.
-  The two forms are indistinguishable once parsed — both yield the specifier
-  `pkg.deep` — so `import pkg.deep` with no `pkg/deep.py` indexed also
-  resolves to `pkg/__init__.py`. That is an approximation: the edge points
+  `from pkg import deep` and `import pkg.deep` are indistinguishable once
+  parsed — both yield the specifier `pkg.deep` — so `import pkg.deep` with
+  no `pkg/deep.py` indexed also resolves to `pkg/__init__.py`. That is an approximation: the edge points
   at the package that would contain the module, but the statement itself
   would raise `ModuleNotFoundError`.
 - **Go** — strips the module path declared in `go.mod`'s `module` line from
@@ -210,17 +260,37 @@ edges between files:
   itself).
 
 **Export rules are per-language, and two of them are container-granted.** A
-symbol is a candidate for a cross-file call edge only if it is exported, and
-each language decides that its own way: an `export` statement (TypeScript,
-JavaScript), module-level definition (Python), a capitalised name (Go), an
-explicit `public` **or** membership of an interface or annotation type
-(Java), and a `pub` modifier **or** membership of a trait (Rust). The last
-two are container-granted because the member is not allowed to state the
-visibility itself — a Java interface member and a Rust trait method both
-reject an explicit modifier (rustc E0449), so a rule that looked only at the
-declaration would mark every one of them unexported and silently drop every
-cross-file edge into an interface or a trait. One consequence to know: a
-member of a *private* trait or interface is reported as exported.
+symbol reached **through an import** is a candidate for a cross-file call
+edge only if it is exported, and each language decides that its own way: an
+`export` statement (TypeScript, JavaScript), module-level definition
+(Python), a capitalised name (Go), an explicit `public` **or** membership of
+an interface or annotation type (Java), and a `pub` modifier **or**
+membership of a trait (Rust). Two candidate sources are deliberately exempt
+from the export test: a file's own local declarations, and — for Go and Java
+— files in the same directory, which is a ruling in its own right and is
+explained under same-package resolution below.
+
+The Java and Rust rules are both container-granted, but for *opposite*
+reasons, and the contrast is the useful part. Java **allows** a redundant
+`public` on an interface member and does not require one (JLS §9.4;
+`public int a();` compiles), which is exactly why the rule tests for an
+explicit `public` first and only then asks what the nearest enclosing type
+is. Rust **forbids** the modifier: `pub fn` inside a trait or an
+`impl Trait for T` is a compile error (rustc E0449), so there is never
+anything on the declaration to test and the container is the only possible
+source of the answer. Same outcome — the member is public because its
+container says so — from opposite language rules. Reading the declaration
+alone would drop cross-file edges into an interface whenever the optional
+modifier is omitted, which is the normal Java style, and into a Rust trait
+*always*. One consequence to know: a member of a *private* trait or
+interface is reported as exported.
+
+**Only two edge kinds are ever produced.** The index's `kind` column admits
+`calls`, `extends`, `implements`, `instantiates` and `references`, and
+`get_dependencies` accepts all five in its `kind` filter, but the parser
+emits only `calls` and `instantiates` — no query captures inheritance. The
+other three are reserved for future work and are never written, so filtering
+on them returns nothing.
 
 **A call inside a Rust macro produces no edge.** `println!`, `format!`,
 `write!`, `assert!` and `assert_eq!` are pervasive in real Rust, and a call
@@ -236,9 +306,14 @@ repository's edge counts as a floor rather than a total.
 
 **An unresolved import yields no edge.** A repository whose import style the
 resolver does not recognise will index with real symbols and files but a
-sparse dependency graph: `get_repo_overview`'s `edgeConfidence` and per-file
-`imports.confidence` make this visible rather than hiding it behind a
-confident-looking but empty answer. `ambiguous` (several candidates matched)
+sparse dependency graph: `get_repo_overview`'s `edgeConfidence` makes this
+visible rather than hiding it behind a confident-looking but empty answer —
+a repository the resolver cannot read shows almost everything as
+`unresolved` there. The per-import confidence is recorded in the index but
+no tool reports it today: `edgeConfidence` counts the `edges` table only,
+and `get_dependencies` stamps every file/directory-level node `resolved` by
+construction rather than reading the stored value. Getting at it means
+querying the index database directly. `ambiguous` (several candidates matched)
 and `unresolved` (no candidate matched — an external package, the standard
 library, or an import form not yet understood) are reported as distinct
 tiers; never assume one when you see the other.
