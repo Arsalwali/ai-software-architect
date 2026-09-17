@@ -70,9 +70,11 @@ first occupant, and can be added without schema changes.
 Eight modules. Everything language-specific sits behind one normalized record type, so
 no module downstream of the parser knows what language anything was written in. That
 boundary holds. What does NOT hold — and the original wording of this paragraph claimed
-it did — is that adding a language never touches core: a language declares itself in the
-parser's registry and may need one or two shape-dependent hooks inside the parser and
-indexer. §5.2 lists exactly what is required and what is optional.
+it did — is that adding a language never touches core. Adding one touches **about eight
+files**, and a language whose visibility rule is new to the project **must** edit the
+parser itself, where an exhaustive `switch` makes omitting that edit a build failure
+rather than a silent wrong answer. §5.2 lists exactly what is required and what is
+optional.
 
 ```
   repo-source ──► parser ──► resolver ──► graph-store ◄── summarizer
@@ -112,9 +114,9 @@ interface ParsedFile {
 **This type is the load-bearing contract of the project.** No module downstream of the
 parser knows what language anything was written in. Write this type first and defend it.
 
-**What adding a language actually costs.** An earlier version of this section promised
-"a grammar and four query files … and changing nothing else". That was false, and the
-multi-language work counted five to ten files. The honest seam, as built:
+**What adding a language actually costs — about eight files.** An earlier version of
+this section promised "a grammar and four query files … and changing nothing else". That
+was false. The honest seam, as built:
 
 *Required, for every language:*
 
@@ -131,8 +133,32 @@ multi-language work counted five to ten files. The honest seam, as built:
    `calls.scm`. Not four — there is no `exports.scm`; visibility is decided by the
    registry's export rule against the AST, because no language this project supports
    expresses its export surface in a way one query can capture.
-3. **An import resolver** in `src/resolve`, registered under the entry's `resolverId`,
-   or reuse of an existing one (the four JS-family entries share one).
+3. **An import resolver** in `src/resolve`, plus its line in that directory's `index.ts`
+   `RESOLVERS` map — two files. Or reuse of an existing `resolverId`, in which case
+   neither is touched (the four JS-family entries share one).
+4. **A row in `tests/languages.test.ts`.** Its `covers every registry entry` assertion
+   compares the table's ids against `LANGUAGES`, so a language added without a row turns
+   that test red.
+
+*Required if the language's visibility rule is new — this is the case the earlier
+wording got wrong by filing it as optional:*
+
+5. **A new `ExportRule` member** (`src/parser/languages.ts`) **and its case in
+   `isExported`** (`src/parser/parser.ts`). Not skippable. The switch there is exhaustive
+   with no `default`, so adding the member without the case fails to compile:
+
+   ```
+   src/parser/parser.ts(217,66): error TS2366: Function lacks ending return statement
+   and return type does not include 'undefined'.
+   ```
+
+   That compile error is the design, not friction. Before the export rule moved into the
+   registry, this exact omission returned `false` for every symbol in the new language,
+   silently, costing it every cross-file call edge. A build failure naming the line is
+   the improvement. A language that reuses one of the five existing rules
+   (`js-export-statement`, `python-module-level`, `go-capitalised`,
+   `java-public-or-interface-member`, `rust-visibility-modifier`) skips this
+   step entirely.
 
 *Optional, depending on the language's shape:*
 

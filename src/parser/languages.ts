@@ -111,34 +111,54 @@ const JS_ENCLOSING_SYMBOL_NODES = [
 // strategy (see `src/resolve`) applies to files of this language, and
 // languages that share an import syntax can share a resolver.
 //
-// WHAT ADDING A LANGUAGE ACTUALLY COSTS (see the plan's Done Criteria and
-// spec SS5.2, both corrected to match this):
+// WHAT ADDING A LANGUAGE ACTUALLY COSTS -- about EIGHT files (see the
+// plan's Done Criteria and spec SS5.2, both saying the same thing):
 //
-//   REQUIRED, always: one entry below -- which the type forces to be
-//   complete -- plus a queries/<dir> holding symbols.scm, imports.scm and
-//   calls.scm, plus a resolver in src/resolve registered under its
-//   `resolverId` (or reuse of an existing one).
+//   REQUIRED, always:
+//     1. One entry below. The type forces it to be complete.
+//     2. queries/<dir>/symbols.scm, imports.scm and calls.scm (3 files).
+//        Three, not four: there is no exports.scm.
+//     3. A resolver in src/resolve, plus its line in that directory's
+//        index.ts RESOLVERS map (2 files) -- or reuse of an existing
+//        `resolverId`, in which case neither is touched.
+//     4. A row in tests/languages.test.ts. Its `covers every registry
+//        entry` assertion compares the row ids against LANGUAGES, so a
+//        language added without one turns that test red.
 //
-//   OPTIONAL, depending on the language's SHAPE, all in src/parser/parser.ts
-//   or src/indexer unless noted:
-//     - METHOD_CONTAINER_TYPES -- only if a method parses as a plain
-//       function nested in a type body (Python, Rust).
-//     - ENCLOSING_CLASS_TYPES -- only if a method's container is something
-//       other than `class_declaration` (Java), or is named by a field on
-//       the method itself rather than an ancestor (Go, which has its own
-//       branch).
+//   REQUIRED IF the language's visibility rule is not one of the five
+//   `ExportRule` members already defined above:
+//     5. A new member on `ExportRule` here, AND its case in `isExported`
+//        in src/parser/parser.ts. This is NOT optional and NOT skippable:
+//        the switch there is exhaustive with no `default`, so adding the
+//        member alone fails to compile --
+//          src/parser/parser.ts(217,66): error TS2366: Function lacks
+//          ending return statement and return type does not include
+//          'undefined'.
+//        That compile error is the POINT. Before consolidation this same
+//        omission returned `false` for every symbol in the new language,
+//        silently, and cost it every cross-file call edge. A build failure
+//        naming the exact line is the improvement, not an inconvenience.
+//
+//   OPTIONAL, depending on the language's SHAPE:
+//     - METHOD_CONTAINER_TYPES (src/parser/parser.ts) -- only if a method
+//       parses as a plain function nested in a type body (Python, Rust).
+//     - ENCLOSING_CLASS_TYPES (src/parser/parser.ts) -- only if a method's
+//       container is something other than `class_declaration` (Java), or is
+//       named by a field on the method itself rather than an ancestor (Go,
+//       which has its own branch).
 //     - SAME_PACKAGE_LANGS (src/indexer/same-package.ts) and the matching
-//       incremental widening -- only for directory-scoped languages where
-//       siblings reference each other with no import (Go, Java).
+//       widening in src/indexer/incremental.ts -- only for directory-scoped
+//       languages where siblings reference each other with no import
+//       (Go, Java).
 //     - An @member capture in imports.scm -- only if one import specifier
 //       is spread across two grammar nodes (Python's `from pkg import x`).
 //
 // The three hooks that used to fail SILENTLY when omitted -- the export
 // rule, the enclosing-symbol node types and the entry basenames -- are
 // fields above, not tables elsewhere, precisely so they cannot be
-// forgotten. The optional hooks above all fail VISIBLY or not at all: a
-// missing METHOD_CONTAINER_TYPES entry yields `function` instead of
-// `method`, a missing SAME_PACKAGE_LANGS entry yields unresolved edges.
+// forgotten. The optional hooks fail VISIBLY or not at all: a missing
+// METHOD_CONTAINER_TYPES entry yields `function` instead of `method`, a
+// missing SAME_PACKAGE_LANGS entry yields unresolved edges.
 export const LANGUAGES: LanguageDef[] = [
   def({
     id: 'typescript', wasm: 'typescript', queries: 'typescript',
