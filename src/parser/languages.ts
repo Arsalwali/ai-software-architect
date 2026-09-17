@@ -51,15 +51,20 @@ export interface LanguageDef {
    * reason: omitting it used to leave every `enclosingSymbol` null, which
    * blinds `trace_flow` and `impact_of` without failing anything.
    *
-   * Per language rather than one shared set. The seven node types across
-   * the eight entries below are DISJOINT by grammar -- verified by probing
-   * each wasm grammar's type list: only the TypeScript/TSX grammars have
-   * `method_definition`/`arrow_function`/`function_expression`, only Python
-   * has `function_definition`, only Rust has `function_item`, `java` has
-   * `method_declaration` and no other, and `function_declaration` /
-   * `method_declaration` exist in Go. So no file can contain a node type
-   * outside its own language's list, and splitting the previously-shared
-   * set per language cannot change any existing result.
+   * Per language rather than one shared set. These node types are NOT
+   * disjoint across grammars -- `function_declaration` exists in both the
+   * TypeScript and Go grammars, and `method_declaration` in both Go and
+   * Java -- so "each grammar owns its own node types" would be a false
+   * explanation of why the split is safe.
+   *
+   * The invariant that IS true, and that was verified by probing every wasm
+   * grammar's type list: for each entry, the declared list equals the OLD
+   * shared set INTERSECTED WITH THAT LANGUAGE'S OWN GRAMMAR. A node type
+   * dropped from a language's list is one its grammar cannot produce, so
+   * the `types.includes()` walk in parser.ts can never reach a different
+   * answer than the old `Set.has()` did, for any file in any language.
+   * (Overlap between languages is therefore harmless: `method_declaration`
+   * is declared by BOTH Go and Java, because both grammars have it.)
    */
   enclosingSymbolNodes: string[]
   /**
