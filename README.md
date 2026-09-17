@@ -181,6 +181,11 @@ edges between files:
   target: `from pkg import service` resolves to `pkg/service.py` when that
   submodule exists, and falls back to `pkg/__init__.py` when the name is an
   item defined there (`from pkg import Service`) rather than a submodule.
+  The two forms are indistinguishable once parsed — both yield the specifier
+  `pkg.deep` — so `import pkg.deep` with no `pkg/deep.py` indexed also
+  resolves to `pkg/__init__.py`. That is an approximation: the edge points
+  at the package that would contain the module, but the statement itself
+  would raise `ModuleNotFoundError`.
 - **Go** — strips the module path declared in `go.mod`'s `module` line from
   the front of the import specifier; what remains names a package
   **directory**, not a file (a Go package is one or more `.go` files sharing

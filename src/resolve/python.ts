@@ -63,6 +63,35 @@ export const pythonResolver: ImportResolver = {
 }
 
 /**
+ * NAMED APPROXIMATION (final-fixes-round2.md item 3 — documented, deliberately
+ * not fixed; the same shape already accepted for rustResolver's crate-root
+ * fallback):
+ *
+ * The item-drop attempt above cannot tell `from pkg import deep` from
+ * `import pkg.deep`. Both arrive here as the specifier `pkg.deep` — the
+ * import FORM is not carried on `RawImport`, and threading it through would
+ * be a contract change across the parser, the store and every resolver.
+ *
+ * So when `pkg/deep.py` does NOT exist, BOTH forms now resolve to
+ * `pkg/__init__.py` at `resolved`. For `from pkg import deep` that is
+ * correct: the name is an item defined in the package. For `import
+ * pkg.deep` it is an APPROXIMATION and, when no such submodule exists
+ * anywhere, simply wrong — Python raises `ModuleNotFoundError` for that
+ * statement. `pkg/__init__.py` does execute first, which is why the edge
+ * points somewhere defensible rather than nowhere, but the import as
+ * written does not succeed, and this resolver must not be read as claiming
+ * it does.
+ *
+ * This is a BEHAVIOUR CHANGE introduced by final-fixes.md item 4: before
+ * it, `import pkg.deep` with `pkg/deep.py` absent was `unresolved`. The
+ * edge now points at the package that would have contained the module.
+ * Scope of the error: one import row aimed at a real, related file instead
+ * of at nothing, only for an import that would not run at all. Nothing
+ * downstream treats it as a verified binding — it is `resolved`, never
+ * `exact`.
+ */
+
+/**
  * Splits a leading-dot specifier into a starting directory and the remaining
  * dotted path. One dot means the importing file's own package, so climb
  * (dots - 1) levels above it. Returns null when the climb escapes the root.

@@ -540,6 +540,14 @@ Each milestone is independently verifiable.
 
 ## 13. Deferred
 
+- **Python import FORM is not carried through the resolver seam.** `from pkg import
+  deep` and `import pkg.deep` both reach `pythonResolver` as the specifier `pkg.deep`,
+  so when `pkg/deep.py` is not indexed both resolve to `pkg/__init__.py`. Right for the
+  first form, an approximation for the second — that statement raises
+  `ModuleNotFoundError` in Python, even though `__init__.py` does execute before it
+  fails. Fixing it means adding the import form to `RawImport` and threading it through
+  the parser, the store and every resolver. Recorded rather than done at the final gate.
+
 - TypeScript deep resolver via the compiler API, filling the `exact` tier.
 - Interactive architecture visualization, as a separate project over a read-only query
   layer.
